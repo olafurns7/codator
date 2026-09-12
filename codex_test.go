@@ -261,17 +261,19 @@ done
 	}
 }
 
-func TestCodexProbeArgsForceSubscriptionProvider(t *testing.T) {
+func TestCodexProbeArgsUseBuiltinSubscriptionProvider(t *testing.T) {
 	got := strings.Join(codexProbeArgs("app-server", "--listen", "stdio://"), " ")
 	for _, value := range []string{
 		`model_provider="openai"`,
 		`openai_base_url="https://chatgpt.com/backend-api/codex"`,
 		`chatgpt_base_url="https://chatgpt.com/backend-api"`,
-		`requires_openai_auth=true`,
 	} {
 		if !strings.Contains(got, value) {
 			t.Errorf("probe config is missing %q: %s", value, got)
 		}
+	}
+	if strings.Contains(got, `model_providers.openai.requires_openai_auth`) {
+		t.Errorf("probe config overrides the reserved openai provider: %s", got)
 	}
 }
 

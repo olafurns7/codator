@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -300,12 +301,13 @@ type claudeRateLimits struct {
 	SevenDayOpus      *claudeUsageWindow   "json:\"seven_day_opus\""
 	SevenDaySonnet    *claudeUsageWindow   "json:\"seven_day_sonnet\""
 	ModelScoped       *[]claudeUsageWindow "json:\"model_scoped\""
+	Limits            json.RawMessage      "json:\"limits\""
 }
 
 type claudeUsageWindow struct {
-	DisplayName string   "json:\"display_name\""
-	Utilization *float64 "json:\"utilization\""
-	ResetsAt    *string  "json:\"resets_at\""
+	DisplayName string          "json:\"display_name\""
+	Utilization *float64        "json:\"utilization\""
+	ResetsAt    json.RawMessage "json:\"resets_at\""
 }
 
 func parseClaudeQuota(payload json.RawMessage, now time.Time) (quota, error) {
@@ -381,15 +383,14 @@ func claudeUsageWindows(limits *claudeRateLimits, now time.Time, model claudeMod
 		if used < 0 || used > 100 {
 			return "Claude usage window utilization is malformed"
 		}
-		if window.ResetsAt != nil && *window.ResetsAt != "" {
-			reset, err := time.Parse(time.RFC3339Nano, *window.ResetsAt)
-			if err != nil {
-				return "Claude usage window reset time is malformed"
-			}
-			if !reset.After(now) {
-				return "Claude usage window is stale"
-			}
-		} else if used > 0 {
+		reset, valid := claudeResetTime(window.ResetsAt)
+		if !valid {
+			return "Claude usage window reset time is malformed"
+		}
+		if reset != nil && !reset.After(now) {
+			return "Claude usage window is stale"
+		}
+		if reset == nil && used > 0 {
 			return "Claude usage window reset time is unknown"
 		}
 		values = append(values, used)
@@ -404,6 +405,16 @@ func claudeUsageWindows(limits *claudeRateLimits, now time.Time, model claudeMod
 		record(window)
 	}
 	knownModel := model == claudeModelOpus || model == claudeModelSonnet || model == claudeModelHaiku || model == claudeModelFable
+	hasFableScope := false
+	recordModel := func(window *claudeUsageWindow) {
+		family, known := claudeModelBucket(window.DisplayName)
+		if known && family == claudeModelFable {
+			hasFableScope = true
+		}
+		if !known || !knownModel || family == model {
+			record(window)
+		}
+	}
 	if !knownModel || model == claudeModelOpus {
 		record(limits.SevenDayOpus)
 	}
@@ -412,13 +423,102 @@ func claudeUsageWindows(limits *claudeRateLimits, now time.Time, model claudeMod
 	}
 	if limits.ModelScoped != nil {
 		for _, window := range *limits.ModelScoped {
-			family, known := claudeModelBucket(window.DisplayName)
-			if !known || !knownModel || family == model {
-				record(&window)
-			}
+			recordModel(&window)
 		}
 	}
+	rawWindows, rawReason := claudeRawWeeklyModelWindows(limits.Limits)
+	if rawReason != "" && firstReason == "" {
+		firstReason = rawReason
+	}
+	for i := range rawWindows {
+		recordModel(&rawWindows[i])
+	}
+	if model == claudeModelFable && !hasFableScope && firstReason == "" {
+		firstReason = "Claude Fable usage window is unknown"
+	}
 	return values, firstReason
+}
+
+func claudeRawWeeklyModelWindows(raw json.RawMessage) ([]claudeUsageWindow, string) {
+	if len(raw) == 0 || strings.TrimSpace(string(raw)) == "null" {
+		return nil, ""
+	}
+	var rows []json.RawMessage
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return nil, "Claude usage limits are malformed"
+	}
+	windows := make([]claudeUsageWindow, 0, len(rows))
+	var firstReason string
+	for _, row := range rows {
+		var limit struct {
+			Kind     json.RawMessage `json:"kind"`
+			Percent  json.RawMessage `json:"percent"`
+			Scope    json.RawMessage `json:"scope"`
+			ResetsAt json.RawMessage `json:"resets_at"`
+		}
+		if err := json.Unmarshal(row, &limit); err != nil {
+			if firstReason == "" {
+				firstReason = "Claude usage limits are malformed"
+			}
+			continue
+		}
+		var kind string
+		if err := json.Unmarshal(limit.Kind, &kind); err != nil || kind == "" {
+			if firstReason == "" {
+				firstReason = "Claude usage limit kind is unknown"
+			}
+			continue
+		}
+		if kind != "weekly_scoped" {
+			continue
+		}
+		var scope struct {
+			Model struct {
+				DisplayName json.RawMessage `json:"display_name"`
+			} `json:"model"`
+		}
+		_ = json.Unmarshal(limit.Scope, &scope)
+		var displayName string
+		_ = json.Unmarshal(scope.Model.DisplayName, &displayName)
+		var utilization *float64
+		if len(limit.Percent) > 0 && strings.TrimSpace(string(limit.Percent)) != "null" {
+			var percent float64
+			if json.Unmarshal(limit.Percent, &percent) == nil {
+				utilization = &percent
+			}
+		}
+		windows = append(windows, claudeUsageWindow{
+			DisplayName: displayName,
+			Utilization: utilization,
+			ResetsAt:    limit.ResetsAt,
+		})
+	}
+	return windows, firstReason
+}
+
+func claudeResetTime(raw json.RawMessage) (*time.Time, bool) {
+	value := strings.TrimSpace(string(raw))
+	if value == "" || value == "null" {
+		return nil, true
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		if text == "" {
+			return nil, true
+		}
+		reset, err := time.Parse(time.RFC3339Nano, text)
+		return &reset, err == nil
+	}
+	var seconds float64
+	if err := json.Unmarshal(raw, &seconds); err != nil || math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds < -math.Exp2(63) || seconds >= math.Exp2(63) {
+		return nil, false
+	}
+	whole, fraction := math.Modf(seconds)
+	reset := time.Unix(int64(whole), int64(fraction*float64(time.Second))).UTC()
+	if reset.Year() < 0 || reset.Year() > 9999 {
+		return nil, false
+	}
+	return &reset, true
 }
 
 func claudeModelBucket(label string) (claudeModelFamily, bool) {

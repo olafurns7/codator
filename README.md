@@ -45,4 +45,4 @@ Claude launch selection reads only an unambiguous pre-prompt `--model VALUE` or 
 
 Only background Claude quota probes use `--safe-mode`; ordinary launches receive the native argument vector unchanged. Native login and launch flags are validated by their CLI.
 
-Validation used mocked provider responses and empty profiles only. Authenticated sign-in, token refresh, and live quota checks have not been tested.
+Live validation covered three Codex profiles and two Claude Max profiles; tiny `gpt-5.6-luna`, Sonnet 5, and Opus 5 prompts succeeded. No Fable inference, expired-token refresh, or distinct-account identity proof was tested.

@@ -17,7 +17,6 @@ var codexForcedConfig = []string{
 	`model_provider="openai"`,
 	`openai_base_url="https://chatgpt.com/backend-api/codex"`,
 	`chatgpt_base_url="https://chatgpt.com/backend-api"`,
-	`model_providers.openai.requires_openai_auth=true`,
 }
 
 var codexAuthEnv = []string{

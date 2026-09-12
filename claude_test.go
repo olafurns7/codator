@@ -170,6 +170,125 @@ func TestClaudeQuotaModelBucketsKeepSharedAndUnknownLimits(t *testing.T) {
 	}
 }
 
+func TestClaudeQuotaReadsRawWeeklyModelLimitsBesidePartialProjection(t *testing.T) {
+	now := time.Date(2026, 9, 12, 20, 30, 0, 0, time.UTC)
+	reset := "2026-09-12T23:59:59Z"
+	numericReset := strconv.FormatInt(time.Date(2026, 9, 13, 0, 0, 0, 0, time.UTC).Unix(), 10)
+	payload := json.RawMessage(`{"subscription_type":"max","rate_limits_available":true,"rate_limits":{` +
+		`"five_hour":{"utilization":0,"resets_at":"` + reset + `"},` +
+		`"seven_day":{"utilization":10,"resets_at":"` + reset + `"},` +
+		`"model_scoped":[{"display_name":"Sonnet","utilization":20,"resets_at":` + numericReset + `}],` +
+		`"limits":[` +
+		`{"kind":"other","percent":100,"resets_at":` + numericReset + `},` +
+		`{"kind":"weekly_scoped","percent":100,"scope":{"model":{"display_name":"Fable"}},"resets_at":"` + reset + `"},` +
+		`{"kind":"weekly_scoped","percent":35,"scope":{"model":{"display_name":"Sonnet"}},"resets_at":` + numericReset + `},` +
+		`{"kind":"weekly_scoped","percent":60,"scope":{"model":{"display_name":"Opus"}},"resets_at":` + numericReset + `}]}}`)
+	sonnetModel, sonnetKnown := claudeModelFamilyForName("claude-sonnet-5")
+	opusModel, opusKnown := claudeModelFamilyForName("claude-opus-5")
+	fableModel, fableKnown := claudeModelFamilyForName("claude-fable-5-1")
+	if !sonnetKnown || !opusKnown || !fableKnown {
+		t.Fatal("known Claude model aliases were not recognized")
+	}
+	sonnet, err := parseClaudeQuotaForModel(payload, now, sonnetModel)
+	if err != nil || !sonnet.Eligible || sonnet.Headroom != 65 {
+		t.Fatalf("Sonnet ignored its raw cap or included Fable's: %+v, %v", sonnet, err)
+	}
+	opus, err := parseClaudeQuotaForModel(payload, now, opusModel)
+	if err != nil || !opus.Eligible || opus.Headroom != 40 {
+		t.Fatalf("Opus did not use its numeric-reset raw cap: %+v, %v", opus, err)
+	}
+	fable, err := parseClaudeQuotaForModel(payload, now, fableModel)
+	if err != nil || !fable.Subscription || !fable.Known || fable.Eligible || fable.Headroom != 0 {
+		t.Fatalf("Fable raw exhaustion was lost beside a partial projection: %+v, %v", fable, err)
+	}
+}
+
+func TestClaudeRawWeeklyModelLimitsRequireFableScopeAndValidateFields(t *testing.T) {
+	now := time.Date(2026, 9, 12, 20, 30, 0, 0, time.UTC)
+	reset := "2026-09-12T23:59:59Z"
+	makePayload := func(limits, projection string) json.RawMessage {
+		projected := ""
+		if projection != "" {
+			projected = `"model_scoped":` + projection + ","
+		}
+		return json.RawMessage(`{"subscription_type":"max","rate_limits_available":true,"rate_limits":{` +
+			`"five_hour":{"utilization":0,"resets_at":"` + reset + `"},` +
+			`"seven_day":{"utilization":10,"resets_at":"` + reset + `"},` +
+			projected + `"limits":` + limits + `}}`)
+	}
+	tests := []struct {
+		name         string
+		limits       string
+		projection   string
+		model        claudeModelFamily
+		wantEligible bool
+		wantKnown    bool
+		wantHeadroom float64
+	}{
+		{
+			name:       "missing Fable scope stays unknown despite shared windows",
+			limits:     `[]`,
+			projection: `[{"display_name":"Sonnet","utilization":20,"resets_at":"` + reset + `"}]`,
+			model:      claudeModelFable,
+		},
+		{
+			name:   "stale numeric reset",
+			limits: `[{"kind":"weekly_scoped","percent":100,"scope":{"model":{"display_name":"Fable"}},"resets_at":1}]`,
+			model:  claudeModelFable,
+		},
+		{
+			name:   "missing reset with nonzero usage",
+			limits: `[{"kind":"weekly_scoped","percent":100,"scope":{"model":{"display_name":"Fable"}}}]`,
+			model:  claudeModelFable,
+		},
+		{
+			name:   "malformed numeric utilization",
+			limits: `[{"kind":"weekly_scoped","percent":"bad","scope":{"model":{"display_name":"Fable"}},"resets_at":"` + reset + `"}]`,
+			model:  claudeModelFable,
+		},
+		{
+			name:   "malformed reset type",
+			limits: `[{"kind":"weekly_scoped","percent":100,"scope":{"model":{"display_name":"Fable"}},"resets_at":true}]`,
+			model:  claudeModelFable,
+		},
+		{
+			name:         "zero usage accepts missing reset",
+			limits:       `[{"kind":"weekly_scoped","percent":0,"scope":{"model":{"display_name":"Fable"}}}]`,
+			model:        claudeModelFable,
+			wantEligible: true,
+			wantKnown:    true,
+			wantHeadroom: 90,
+		},
+		{
+			name:      "unknown raw scope conservatively applies to Sonnet",
+			limits:    `[{"kind":"weekly_scoped","percent":100,"scope":{"model":{"display_name":"Future"}},"resets_at":"` + reset + `"}]`,
+			model:     claudeModelSonnet,
+			wantKnown: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := parseClaudeQuotaForModel(makePayload(test.limits, test.projection), now, test.model)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !got.Subscription || got.Eligible != test.wantEligible || got.Known != test.wantKnown || got.Headroom != test.wantHeadroom {
+				t.Fatalf("quota = %+v", got)
+			}
+		})
+	}
+
+	for _, limits := range []string{
+		`[{"kind":"weekly_scoped","percent":100,"scope":{"model":{"display_name":"Fable"}},"resets_at":"` + reset + `"},{"kind":"weekly_scoped","percent":"bad","scope":{"model":{"display_name":"Fable"}},"resets_at":"` + reset + `"}]`,
+		`[{"kind":"weekly_scoped","percent":"bad","scope":{"model":{"display_name":"Fable"}},"resets_at":"` + reset + `"},{"kind":"weekly_scoped","percent":100,"scope":{"model":{"display_name":"Fable"}},"resets_at":"` + reset + `"}]`,
+	} {
+		got, err := parseClaudeQuotaForModel(makePayload(limits, ""), now, claudeModelFable)
+		if err != nil || !got.Subscription || !got.Known || got.Eligible || got.Headroom != 0 {
+			t.Fatalf("fresh raw exhaustion was lost beside a malformed sibling: %+v, %v", got, err)
+		}
+	}
+}
+
 func TestClaudeControlResponseMatchingAndErrors(t *testing.T) {
 	other := []byte("{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"other\"}}")
 	if _, matched, err := decodeClaudeControlFrame(other, "init-1"); err != nil || matched {
@@ -292,10 +411,12 @@ func TestProbeClaudeHandshakeAndNoUserFrame(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(3 * time.Second)
-	for processRunning(pid) && time.Now().Before(deadline) {
+	running := processRunning(pid)
+	for running && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
+		running = processRunning(pid)
 	}
-	if processRunning(pid) {
+	if running {
 		t.Fatalf("Claude probe descendant %d survived cleanup", pid)
 	}
 }

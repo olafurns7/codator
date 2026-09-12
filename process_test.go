@@ -292,10 +292,12 @@ wait
 	if err != nil {
 		t.Fatalf("invalid grandchild PID: %q", pidBytes)
 	}
-	for processRunning(pid) && time.Now().Before(deadline) {
+	running := processRunning(pid)
+	for running && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
+		running = processRunning(pid)
 	}
-	if processRunning(pid) {
+	if running {
 		t.Fatalf("probe grandchild %d is still running after cancellation", pid)
 	}
 }
