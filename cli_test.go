@@ -77,3 +77,57 @@ func TestParseInvocation(t *testing.T) {
 		t.Fatal("accepted native login options without separator")
 	}
 }
+
+func TestClaudeModelHintUsesOnlyUnambiguousNativeModelFlags(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want claudeModelFamily
+	}{
+		{"Sonnet alias", []string{"--model", "sonnet"}, claudeModelSonnet},
+		{"Opus alias", []string{"--model", "opus"}, claudeModelOpus},
+		{"Fable alias", []string{"--model", "fable"}, claudeModelFable},
+		{"Haiku alias", []string{"--model", "haiku"}, claudeModelHaiku},
+		{"current Opus full ID", []string{"--model", "claude-opus-5"}, claudeModelOpus},
+		{"current Sonnet full ID", []string{"--model", "claude-sonnet-5"}, claudeModelSonnet},
+		{"current Fable full ID", []string{"--model", "claude-fable-5-1"}, claudeModelFable},
+		{"older Fable ID is conservative", []string{"--model", "claude-fable-5"}, ""},
+		{"other model version is conservative", []string{"--model", "claude-sonnet-4-5"}, ""},
+		{"equals model option", []string{"--model=sonnet"}, claudeModelSonnet},
+		{"settings value is not a model hint", []string{"--settings", `{"model":"fable"}`, "--model", "sonnet"}, claudeModelSonnet},
+		{"option-looking settings value is skipped whole", []string{"--settings", "--model", "--model", "sonnet"}, claudeModelSonnet},
+		{"plugin directory value is skipped whole", []string{"--plugin-dir-no-mcp", "--model=fable", "--model", "sonnet"}, claudeModelSonnet},
+		{"cwd option value is skipped whole", []string{"--cwd", "--model", "--model=fable"}, claudeModelFable},
+		{"stops at delimiter", []string{"--model", "sonnet", "--", "prompt", "-m", "fable"}, claudeModelSonnet},
+		{"delimiter tail with model option is ambiguous", []string{"--model", "sonnet", "--", "--model=fable"}, ""},
+		{"prompt tail attached agent override clears hint", []string{"--model", "sonnet", "prompt", "--agent=fable-agent"}, ""},
+		{"delimiter tail attached agent override clears hint", []string{"--model", "sonnet", "--", "--agent=fable-agent"}, ""},
+		{"prompt tail attached fallback override clears hint", []string{"--model", "sonnet", "prompt", "--fallback-model=claude-opus-5"}, ""},
+		{"delimiter tail attached resume override clears hint", []string{"--model", "sonnet", "--", "--resume=session-id"}, ""},
+		{"prompt tail attached from-pr override clears hint", []string{"--model", "sonnet", "prompt", "--from-pr=123"}, ""},
+		{"delimiter tail attached teleport override clears hint", []string{"--model", "sonnet", "--", "--teleport=session-id"}, ""},
+		{"prompt model text is not parsed", []string{"-p", "say --model fable"}, ""},
+		{"prompt after a model with later model-looking tokens is ambiguous", []string{"--model", "sonnet", "prompt", "--model", "fable"}, ""},
+		{"prompt after a model with equals model tail is ambiguous", []string{"--model", "sonnet", "prompt", "--model=fable"}, ""},
+		{"model after a positional is implicit to this observer", []string{"exec", "--model", "sonnet"}, ""},
+		{"common model-neutral flags use both value forms", []string{"--dangerously-skip-permissions", "--permission-mode", "bypassPermissions", "--effort=high", "--output-format", "json", "--model", "claude-sonnet-5", "-p", "prompt"}, claudeModelSonnet},
+		{"common attached values do not consume following options", []string{"--permission-mode=bypassPermissions", "--effort=high", "--output-format=json", "--model", "claude-sonnet-5"}, claudeModelSonnet},
+		{"repeated model values are conservative", []string{"--model", "sonnet", "--model", "fable"}, ""},
+		{"fallback model is mixed", []string{"--model", "sonnet", "--fallback-model", "fable"}, ""},
+		{"agent override is conservative", []string{"--model", "sonnet", "--agent", "fable-agent"}, ""},
+		{"agents override is conservative", []string{"--model", "sonnet", "--agents", `{"agent":{}}`}, ""},
+		{"resume mode is conservative", []string{"--model", "sonnet", "--resume"}, ""},
+		{"variadic option is conservative", []string{"--mcp-config", "servers.json", "--model", "sonnet"}, ""},
+		{"unknown model is conservative", []string{"--model", "future-model"}, ""},
+		{"unknown option grammar is conservative", []string{"--future-option", "value", "--model", "sonnet"}, ""},
+		{"unverified short spelling is not inferred", []string{"-m", "sonnet"}, ""},
+		{"missing model value is conservative", []string{"--model"}, ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := claudeModelHint(test.args); got != test.want {
+				t.Fatalf("claudeModelHint(%q) = %q, want %q", test.args, got, test.want)
+			}
+		})
+	}
+}

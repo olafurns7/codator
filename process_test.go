@@ -306,7 +306,7 @@ func processRunning(pid int) bool {
 	}
 	stat, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
 	if err != nil {
-		return true
+		return !errors.Is(err, os.ErrNotExist)
 	}
 	end := strings.LastIndexByte(string(stat), ')')
 	if end < 0 {

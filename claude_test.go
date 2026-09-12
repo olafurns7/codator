@@ -92,6 +92,14 @@ func TestClaudeQuotaIncludesAllModelWindows(t *testing.T) {
 	if err != nil || allModels.Eligible || !allModels.Known {
 		t.Fatalf("quota ignored an exhausted model window: %#v, %v", allModels, err)
 	}
+	sonnet, err := parseClaudeQuotaForModel(raw, now, claudeModelSonnet)
+	if err != nil || !sonnet.Eligible || sonnet.Headroom != 70 {
+		t.Fatalf("Sonnet quota included irrelevant model windows: %#v, %v", sonnet, err)
+	}
+	opus, err := parseClaudeQuotaForModel(raw, now, claudeModelOpus)
+	if err != nil || opus.Eligible || !opus.Known {
+		t.Fatalf("Opus quota ignored its exhausted windows: %#v, %v", opus, err)
+	}
 
 	ambiguous := json.RawMessage("{\"subscription_type\":\"pro\",\"rate_limits_available\":true,\"rate_limits\":{" +
 		"\"five_hour\":{\"utilization\":10,\"resets_at\":\"2026-09-13T12:00:00Z\"}," +
@@ -99,6 +107,66 @@ func TestClaudeQuotaIncludesAllModelWindows(t *testing.T) {
 	conservative, err := parseClaudeQuota(ambiguous, now)
 	if err != nil || !conservative.Eligible || conservative.Headroom != 20 {
 		t.Fatalf("ambiguous model window was ignored: %#v, %v", conservative, err)
+	}
+}
+
+func TestClaudeQuotaModelBucketsKeepSharedAndUnknownLimits(t *testing.T) {
+	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+	reset := "2026-09-13T12:00:00Z"
+	payload := json.RawMessage(`{"subscription_type":"max","rate_limits_available":true,"rate_limits":{` +
+		`"five_hour":{"utilization":15,"resets_at":"` + reset + `"},` +
+		`"seven_day":{"utilization":20,"resets_at":"` + reset + `"},` +
+		`"seven_day_oauth_apps":{"utilization":5,"resets_at":"` + reset + `"},` +
+		`"seven_day_opus":{"utilization":100,"resets_at":"` + reset + `"},` +
+		`"seven_day_sonnet":{"utilization":30,"resets_at":"` + reset + `"},` +
+		`"model_scoped":[` +
+		`{"display_name":"Fable","utilization":100,"resets_at":"` + reset + `"},` +
+		`{"display_name":"Sonnet","utilization":25,"resets_at":"` + reset + `"},` +
+		`{"display_name":"Haiku","utilization":25,"resets_at":"` + reset + `"},` +
+		`{"display_name":"Opus","utilization":100,"resets_at":"` + reset + `"},` +
+		`{"display_name":"future bucket","utilization":10,"resets_at":"` + reset + `"}]}}`)
+	sonnet, err := parseClaudeQuotaForModel(payload, now, claudeModelSonnet)
+	if err != nil || !sonnet.Eligible || sonnet.Headroom != 70 {
+		t.Fatalf("Sonnet did not score shared + Sonnet + unknown windows: %#v, %v", sonnet, err)
+	}
+	fable, err := parseClaudeQuotaForModel(payload, now, claudeModelFable)
+	if err != nil || fable.Eligible || !fable.Known {
+		t.Fatalf("Fable exhaustion was ignored: %#v, %v", fable, err)
+	}
+	haikuHint := claudeModelHint([]string{"--model", "haiku"})
+	if haikuHint != claudeModelHaiku {
+		t.Fatalf("Haiku model hint = %q, want %q", haikuHint, claudeModelHaiku)
+	}
+	haiku, err := parseClaudeQuotaForModel(payload, now, haikuHint)
+	if err != nil || !haiku.Eligible || haiku.Headroom != 75 {
+		t.Fatalf("Haiku was blocked by an irrelevant Fable bucket or ignored its own bucket: %#v, %v", haiku, err)
+	}
+
+	unknownBucket := json.RawMessage(strings.Replace(string(payload),
+		`{"display_name":"future bucket","utilization":10`,
+		`{"display_name":"future bucket","utilization":100`, 1))
+	for _, model := range []claudeModelFamily{claudeModelSonnet, claudeModelHaiku} {
+		blockedByUnknown, err := parseClaudeQuotaForModel(unknownBucket, now, model)
+		if err != nil || blockedByUnknown.Eligible || !blockedByUnknown.Known {
+			t.Fatalf("unknown bucket was ignored for %s: %#v, %v", model, blockedByUnknown, err)
+		}
+	}
+	sharedExhaustion := json.RawMessage(`{"subscription_type":"max","rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":100,"resets_at":"` + reset + `"},"model_scoped":[{"display_name":"Sonnet","utilization":0,"resets_at":"` + reset + `"},{"display_name":"Fable","utilization":0,"resets_at":"` + reset + `"},{"display_name":"Haiku","utilization":0,"resets_at":"` + reset + `"}]}}`)
+	for _, model := range []claudeModelFamily{claudeModelFable, claudeModelOpus, claudeModelSonnet, claudeModelHaiku} {
+		blockedByShared, err := parseClaudeQuotaForModel(sharedExhaustion, now, model)
+		if err != nil || blockedByShared.Eligible || !blockedByShared.Known {
+			t.Fatalf("shared exhaustion did not block %s: %#v, %v", model, blockedByShared, err)
+		}
+	}
+	unknownModel, err := parseClaudeQuotaForModel(payload, now, claudeModelFamily("future"))
+	if err != nil || unknownModel.Eligible || !unknownModel.Known {
+		t.Fatalf("unknown model was not scored conservatively: %#v, %v", unknownModel, err)
+	}
+
+	malformedIrrelevant := json.RawMessage(`{"subscription_type":"max","rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":20,"resets_at":"` + reset + `"},"model_scoped":[{"display_name":"Fable","utilization":101,"resets_at":"bad"},{"display_name":"Sonnet","utilization":25,"resets_at":"` + reset + `"}]}}`)
+	knownSonnet, err := parseClaudeQuotaForModel(malformedIrrelevant, now, claudeModelSonnet)
+	if err != nil || !knownSonnet.Eligible || knownSonnet.Headroom != 75 {
+		t.Fatalf("irrelevant malformed model window affected Sonnet: %#v, %v", knownSonnet, err)
 	}
 }
 
@@ -152,6 +220,11 @@ func TestClaudeFreshExhaustionSurvivesMalformedSibling(t *testing.T) {
 	staleOnly, err := parseClaudeQuota(json.RawMessage(`{"subscription_type":"max","rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":100,"resets_at":"2026-09-12T11:00:00Z"}}}`), now)
 	if err != nil || !staleOnly.Subscription || staleOnly.Known || staleOnly.Eligible || !canLaunchExplicit(staleOnly) {
 		t.Fatalf("stale-only exhaustion was not kept unknown: %+v, %v", staleOnly, err)
+	}
+
+	modelExhaustion, err := parseClaudeQuotaForModel(json.RawMessage(`{"subscription_type":"max","rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":10,"resets_at":"2026-09-13T12:00:00Z"},"model_scoped":[{"display_name":"Fable","utilization":100,"resets_at":"2026-09-13T12:00:00Z"},{"display_name":"future","utilization":101,"resets_at":"bad"}]}}`), now, claudeModelFable)
+	if err != nil || !modelExhaustion.Subscription || !modelExhaustion.Known || modelExhaustion.Eligible || canLaunchExplicit(modelExhaustion) {
+		t.Fatalf("fresh model exhaustion was lost beside malformed unknown sibling: %+v, %v", modelExhaustion, err)
 	}
 }
 

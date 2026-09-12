@@ -166,6 +166,10 @@ func probeClaude(account Account) (quota, error) {
 }
 
 func probeClaudeWithContext(parent context.Context, account Account) (quota, error) {
+	return probeClaudeWithModelContext(parent, account, "")
+}
+
+func probeClaudeWithModelContext(parent context.Context, account Account, model claudeModelFamily) (quota, error) {
 	if account.Provider != "claude" || account.Err != nil || !filepath.IsAbs(account.NativeDir) {
 		return quota{}, errors.New("Claude account profile is unavailable")
 	}
@@ -256,7 +260,31 @@ func probeClaudeWithContext(parent context.Context, account Account) (quota, err
 	if err != nil {
 		return quota{}, err
 	}
-	return parseClaudeQuota(payload, time.Now())
+	return parseClaudeQuotaForModel(payload, time.Now(), model)
+}
+
+type claudeModelFamily string
+
+const (
+	claudeModelOpus   claudeModelFamily = "opus"
+	claudeModelSonnet claudeModelFamily = "sonnet"
+	claudeModelHaiku  claudeModelFamily = "haiku"
+	claudeModelFable  claudeModelFamily = "fable"
+)
+
+func claudeModelFamilyForName(name string) (claudeModelFamily, bool) {
+	switch name {
+	case "opus", "claude-opus-5":
+		return claudeModelOpus, true
+	case "sonnet", "claude-sonnet-5":
+		return claudeModelSonnet, true
+	case "haiku":
+		return claudeModelHaiku, true
+	case "fable", "claude-fable-5-1":
+		return claudeModelFable, true
+	default:
+		return "", false
+	}
 }
 
 type claudeUsageResponse struct {
@@ -281,6 +309,10 @@ type claudeUsageWindow struct {
 }
 
 func parseClaudeQuota(payload json.RawMessage, now time.Time) (quota, error) {
+	return parseClaudeQuotaForModel(payload, now, "")
+}
+
+func parseClaudeQuotaForModel(payload json.RawMessage, now time.Time, model claudeModelFamily) (quota, error) {
 	if len(payload) == 0 || string(payload) == "null" {
 		return quota{}, errors.New("Claude usage response is missing")
 	}
@@ -309,7 +341,7 @@ func parseClaudeQuota(payload json.RawMessage, now time.Time) (quota, error) {
 	if !*usage.RateLimitsAvailable {
 		return quota{Subscription: true, Reason: "Claude rate limits are unavailable"}, nil
 	}
-	values, reason := claudeUsageWindows(usage.RateLimits, now)
+	values, reason := claudeUsageWindows(usage.RateLimits, now, model)
 	allowed := true
 	result := evaluateUsage(&allowed, nil, values)
 	if result.Known && !result.Eligible {
@@ -332,7 +364,7 @@ func knownClaudeSubscription(value string) bool {
 	}
 }
 
-func claudeUsageWindows(limits *claudeRateLimits, now time.Time) ([]float64, string) {
+func claudeUsageWindows(limits *claudeRateLimits, now time.Time, model claudeModelFamily) ([]float64, string) {
 	if limits == nil {
 		return nil, ""
 	}
@@ -371,12 +403,35 @@ func claudeUsageWindows(limits *claudeRateLimits, now time.Time) ([]float64, str
 	for _, window := range []*claudeUsageWindow{limits.FiveHour, limits.SevenDay, limits.SevenDayOAuthApps} {
 		record(window)
 	}
-	record(limits.SevenDayOpus)
-	record(limits.SevenDaySonnet)
+	knownModel := model == claudeModelOpus || model == claudeModelSonnet || model == claudeModelHaiku || model == claudeModelFable
+	if !knownModel || model == claudeModelOpus {
+		record(limits.SevenDayOpus)
+	}
+	if !knownModel || model == claudeModelSonnet {
+		record(limits.SevenDaySonnet)
+	}
 	if limits.ModelScoped != nil {
 		for _, window := range *limits.ModelScoped {
-			record(&window)
+			family, known := claudeModelBucket(window.DisplayName)
+			if !known || !knownModel || family == model {
+				record(&window)
+			}
 		}
 	}
 	return values, firstReason
+}
+
+func claudeModelBucket(label string) (claudeModelFamily, bool) {
+	switch label {
+	case "Opus":
+		return claudeModelOpus, true
+	case "Sonnet":
+		return claudeModelSonnet, true
+	case "Haiku":
+		return claudeModelHaiku, true
+	case "Fable":
+		return claudeModelFable, true
+	default:
+		return "", false
+	}
 }

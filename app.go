@@ -119,7 +119,7 @@ func status(store *Store, out io.Writer, providers ...string) error {
 				fmt.Fprintf(out, "%s %s: unknown (cannot lock profile)\n", provider, account.Name)
 				continue
 			}
-			q, err := probeAccount(signals.ctx, provider, account)
+			q, err := probeAccount(signals.ctx, provider, account, "")
 			lock.Close()
 			if signalErr := signals.ctx.Err(); signalErr != nil {
 				return signalErr
@@ -166,13 +166,17 @@ func launch(store *Store, inv invocation) error {
 	if err := signals.ctx.Err(); err != nil {
 		return err
 	}
-	if inv.account != "" {
-		return launchExplicit(signals, store, path, inv, accounts)
+	var model claudeModelFamily
+	if inv.provider == "claude" {
+		model = claudeModelHint(inv.args)
 	}
-	return launchBest(signals, store, path, inv, accounts)
+	if inv.account != "" {
+		return launchExplicit(signals, store, path, inv, accounts, model)
+	}
+	return launchBest(signals, store, path, inv, accounts, model)
 }
 
-func launchExplicit(signals *probeSignalScope, store *Store, path string, inv invocation, accounts []Account) error {
+func launchExplicit(signals *probeSignalScope, store *Store, path string, inv invocation, accounts []Account, model claudeModelFamily) error {
 	var selected *Account
 	for i := range accounts {
 		if accounts[i].Name == inv.account {
@@ -191,7 +195,7 @@ func launchExplicit(signals *probeSignalScope, store *Store, path string, inv in
 		return err
 	}
 	defer lock.Close()
-	q, err := probeAccount(signals.ctx, inv.provider, *selected)
+	q, err := probeAccount(signals.ctx, inv.provider, *selected, model)
 	if signalErr := signals.ctx.Err(); signalErr != nil {
 		return signalErr
 	}
@@ -215,7 +219,7 @@ type lockedCandidate struct {
 	lock *AccountLock
 }
 
-func launchBest(signals *probeSignalScope, store *Store, path string, inv invocation, accounts []Account) error {
+func launchBest(signals *probeSignalScope, store *Store, path string, inv invocation, accounts []Account, model claudeModelFamily) error {
 	var usable []lockedCandidate
 	var skipped []string
 	for _, account := range accounts {
@@ -236,7 +240,7 @@ func launchBest(signals *probeSignalScope, store *Store, path string, inv invoca
 			skipped = append(skipped, account.Name+": lock failed")
 			continue
 		}
-		q, err := probeAccount(signals.ctx, inv.provider, account)
+		q, err := probeAccount(signals.ctx, inv.provider, account, model)
 		if signalErr := signals.ctx.Err(); signalErr != nil {
 			lock.Close()
 			closeCandidateLocks(usable)
@@ -297,11 +301,11 @@ func quotaReason(q quota) string {
 	return "usage unknown"
 }
 
-func probeAccount(ctx context.Context, provider string, account Account) (quota, error) {
+func probeAccount(ctx context.Context, provider string, account Account, model claudeModelFamily) (quota, error) {
 	if provider == "codex" {
 		return probeCodexWithContext(ctx, account)
 	}
-	return probeClaudeWithContext(ctx, account)
+	return probeClaudeWithModelContext(ctx, account, model)
 }
 
 func execSelected(signals *probeSignalScope, lock *AccountLock, path, provider string, nativeArgs []string, account Account, q quota) error {

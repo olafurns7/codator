@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 const usage = `Usage:
@@ -75,4 +76,107 @@ func parseLaunchArgs(args []string) (string, []string, error) {
 		account, start = args[1], 2
 	}
 	return account, args[start:], nil
+}
+
+func claudeModelHint(args []string) claudeModelFamily {
+	var model claudeModelFamily
+	seen := false
+	for i := 0; i < len(args); {
+		arg := args[i]
+		if arg == "--" {
+			if seen && hasClaudeModelOption(args[i+1:]) {
+				return ""
+			}
+			return model
+		}
+		if !strings.HasPrefix(arg, "-") {
+			if seen && hasClaudeModelOption(args[i+1:]) {
+				return ""
+			}
+			return model
+		}
+		switch {
+		case arg == "--model" || strings.HasPrefix(arg, "--model="):
+			if seen {
+				return ""
+			}
+			name := strings.TrimPrefix(arg, "--model=")
+			if arg == "--model" {
+				if i+1 == len(args) || args[i+1] == "--" || strings.HasPrefix(args[i+1], "-") {
+					return ""
+				}
+				name = args[i+1]
+				i++
+			}
+			if name == "" {
+				return ""
+			}
+			var ok bool
+			model, ok = claudeModelFamilyForName(name)
+			if !ok {
+				return ""
+			}
+			seen = true
+			i++
+		case arg == "--fallback-model" || strings.HasPrefix(arg, "--fallback-model=") ||
+			arg == "--agent" || arg == "--agents" || arg == "--resume" || arg == "-r" ||
+			arg == "--continue" || arg == "-c" || arg == "--from-pr" || arg == "--teleport":
+			return ""
+		case claudeValueOption(arg):
+			if i+1 == len(args) || args[i+1] == "--" {
+				return ""
+			}
+			i += 2
+		case claudeAttachedValueOption(arg):
+			i++
+		case claudeKnownFlag(arg):
+			i++
+		default:
+			return ""
+		}
+	}
+	return model
+}
+
+func hasClaudeModelOption(args []string) bool {
+	for _, arg := range args {
+		if i := strings.IndexByte(arg, '='); i >= 0 {
+			arg = arg[:i]
+		}
+		if arg == "--model" || arg == "--fallback-model" ||
+			arg == "--agent" || arg == "--agents" || arg == "--resume" || arg == "-r" ||
+			arg == "--continue" || arg == "-c" || arg == "--from-pr" || arg == "--teleport" {
+			return true
+		}
+	}
+	return false
+}
+
+func claudeValueOption(arg string) bool {
+	// Keep pre-parser option-looking values intact; unrecognized and variadic options fall back.
+	switch arg {
+	case "--settings", "--plugin-dir", "--plugin-dir-no-mcp", "--cwd",
+		"--permission-mode", "--effort", "--output-format":
+		return true
+	default:
+		return false
+	}
+}
+
+func claudeAttachedValueOption(arg string) bool {
+	for _, option := range []string{"--permission-mode", "--effort", "--output-format"} {
+		if strings.HasPrefix(arg, option+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+func claudeKnownFlag(arg string) bool {
+	switch arg {
+	case "--print", "-p", "--verbose", "--safe-mode", "--no-session-persistence", "--dangerously-skip-permissions":
+		return true
+	default:
+		return false
+	}
 }

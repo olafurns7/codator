@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -208,6 +209,12 @@ func TestLaunchPassesNativeArgsOpaque(t *testing.T) {
 				"prompt with spaces and --account native"},
 		},
 		{
+			name:       "unmapped older Claude model ID stays opaque",
+			provider:   "claude",
+			invocation: []string{"claude", "--account", "work", "--model", "claude-fable-5", "--", "prompt"},
+			nativeArgs: []string{"--model", "claude-fable-5", "--", "prompt"},
+		},
+		{
 			name:       "Codex bare version word remains a native command",
 			provider:   "codex",
 			invocation: []string{"codex", "--account", "work", "version"},
@@ -317,6 +324,162 @@ exit 23
 			lock, err := store.Lock(test.provider, "work")
 			if err != nil {
 				t.Fatalf("selected profile lock was not released: %v", err)
+			}
+			lock.Close()
+		})
+	}
+}
+
+func TestLaunchClaudeSelectsByModelAndPreservesArgs(t *testing.T) {
+	dataHome := tempDataHome(t)
+	store, err := newStore(dataHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"alpha", "beta"} {
+		if _, err := store.EnsureAccount("claude", name); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	if err := os.Mkdir(binDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	launchDir := filepath.Join(root, "work")
+	if err := os.Mkdir(launchDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+profile=${CLAUDE_CONFIG_DIR%/native}
+profile=${profile##*/}
+if [ "$1" = --print ]; then
+  case "$profile" in
+    alpha) fable=100; sonnet=10; opus=90 ;;
+    beta) fable=25; sonnet=80; opus=20 ;;
+    *) exit 90 ;;
+  esac
+  while IFS= read -r line; do
+    case "$line" in
+      *'"request_id":"init-1"'*)
+        printf '%s\n' '{"type":"control_response","response":{"subtype":"success","request_id":"init-1","response":{}}}'
+        ;;
+      *'"request_id":"usage-1"'*)
+        printf '%s\n' "{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"usage-1\",\"response\":{\"subscription_type\":\"max\",\"rate_limits_available\":true,\"rate_limits\":{\"five_hour\":{\"utilization\":10,\"resets_at\":\"2099-01-01T00:00:00Z\"},\"seven_day\":{\"utilization\":20,\"resets_at\":\"2099-01-01T00:00:00Z\"},\"seven_day_opus\":{\"utilization\":$opus,\"resets_at\":\"2099-01-01T00:00:00Z\"},\"seven_day_sonnet\":{\"utilization\":$sonnet,\"resets_at\":\"2099-01-01T00:00:00Z\"},\"model_scoped\":[{\"display_name\":\"Fable\",\"utilization\":$fable,\"resets_at\":\"2099-01-01T00:00:00Z\"},{\"display_name\":\"Sonnet\",\"utilization\":$sonnet,\"resets_at\":\"2099-01-01T00:00:00Z\"},{\"display_name\":\"Opus\",\"utilization\":$opus,\"resets_at\":\"2099-01-01T00:00:00Z\"}]}}}}"
+        exit 0
+        ;;
+    esac
+  done
+  exit 91
+fi
+printf '%s\n' "$profile" > "$CODATOR_SELECTED_FILE"
+printf '%s\0' "$@" > "$CODATOR_CAPTURE_FILE"
+exit 23
+`
+	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name       string
+		args       []string
+		want       string
+		wantNative []string
+		blocked    bool
+	}{
+		{
+			name: "automatic Fable 5.1 uses a different eligible account",
+			args: []string{"claude", "--model=claude-fable-5-1", "--", "run this Fable prompt"},
+			want: "beta", wantNative: []string{"--model=claude-fable-5-1", "--", "run this Fable prompt"},
+		},
+		{
+			name: "automatic Sonnet 5 prefers the Fable-exhausted account",
+			args: []string{"claude", "--model", "claude-sonnet-5", "--dangerously-skip-permissions",
+				"--permission-mode", "bypassPermissions", "--effort=high", "--output-format", "json", "-p",
+				"run this Sonnet prompt"},
+			want: "alpha", wantNative: []string{"--model", "claude-sonnet-5", "--dangerously-skip-permissions",
+				"--permission-mode", "bypassPermissions", "--effort=high", "--output-format", "json", "-p",
+				"run this Sonnet prompt"},
+		},
+		{
+			name: "automatic Opus 5 uses its own weekly bucket",
+			args: []string{"claude", "--model=claude-opus-5", "--", "run this Opus prompt"},
+			want: "beta", wantNative: []string{"--model=claude-opus-5", "--", "run this Opus prompt"},
+		},
+		{
+			name: "explicit Sonnet 5 account remains eligible",
+			args: []string{"claude", "--account", "alpha", "--model", "claude-sonnet-5", "--", "explicit Sonnet"},
+			want: "alpha", wantNative: []string{"--model", "claude-sonnet-5", "--", "explicit Sonnet"},
+		},
+		{
+			name:    "explicit Fable 5.1 account is blocked",
+			args:    []string{"claude", "--account", "alpha", "--model=claude-fable-5-1", "--", "explicit Fable"},
+			blocked: true,
+		},
+	}
+	for i, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			selectedFile := filepath.Join(root, "selected-"+strconv.Itoa(i))
+			captureFile := filepath.Join(root, "argv-"+strconv.Itoa(i))
+			argsJSON, err := json.Marshal(test.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(exe, "-test.run=^TestCodatorPassthroughChild$")
+			cmd.Dir = launchDir
+			cmd.Env = []string{
+				"HOME=" + root,
+				"PATH=" + binDir + string(os.PathListSeparator) + "/usr/bin:/bin",
+				"XDG_DATA_HOME=" + dataHome,
+				"CODATOR_PASSTHROUGH_CHILD=1",
+				"CODATOR_TEST_ARGS=" + string(argsJSON),
+				"CODATOR_SELECTED_FILE=" + selectedFile,
+				"CODATOR_CAPTURE_FILE=" + captureFile,
+			}
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			err = cmd.Run()
+			exit, ok := err.(*exec.ExitError)
+			if test.blocked {
+				if !ok || exit.ExitCode() != 1 || !strings.Contains(stderr.String(), "selected account is ineligible") {
+					t.Fatalf("explicit exhausted launch = %v, stderr=%q", err, stderr.String())
+				}
+				if _, err := os.Stat(captureFile); !os.IsNotExist(err) {
+					t.Fatalf("blocked launch reached native Claude, stat err=%v", err)
+				}
+				lock, err := store.Lock("claude", "alpha")
+				if err != nil {
+					t.Fatalf("blocked account lock was not released: %v", err)
+				}
+				lock.Close()
+				return
+			}
+			if !ok || exit.ExitCode() != 23 {
+				t.Fatalf("native exit status = %v, want 23; stdout=%q stderr=%q", err, stdout.String(), stderr.String())
+			}
+			selected, err := os.ReadFile(selectedFile)
+			if err != nil || strings.TrimSpace(string(selected)) != test.want {
+				t.Fatalf("selected account = %q, want %q; err=%v", selected, test.want, err)
+			}
+			got, err := os.ReadFile(captureFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := strings.Join(test.wantNative, "\x00") + "\x00"
+			if string(got) != want {
+				t.Fatalf("native argv = %q, want %q", strings.Split(string(got), "\x00"), test.wantNative)
+			}
+			if !strings.Contains(stderr.String(), "codator: using claude account "+test.want) {
+				t.Fatalf("launch did not report selected profile: stderr=%q", stderr.String())
+			}
+			lock, err := store.Lock("claude", test.want)
+			if err != nil {
+				t.Fatalf("selected account lock was not released: %v", err)
 			}
 			lock.Close()
 		})
