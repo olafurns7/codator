@@ -68,8 +68,10 @@ func findNative(provider string) (string, error) {
 // The lock fd survives exec, preserving the native CLI's terminal signals, job control, cwd, and exit status.
 // ponytail: a native descendant may inherit the lock too; add a lock broker only if it causes stale busy accounts.
 func execNative(lock *AccountLock, path string, args, env []string) error {
-	if err := lock.InheritOnExec(); err != nil {
-		return fmt.Errorf("prepare account lock: %w", err)
+	if lock != nil {
+		if err := lock.InheritOnExec(); err != nil {
+			return fmt.Errorf("prepare account lock: %w", err)
+		}
 	}
 	argv := make([]string, 1, len(args)+1)
 	argv[0] = filepath.Base(path)

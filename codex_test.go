@@ -7,23 +7,157 @@ import (
 	"testing"
 )
 
-func TestCodexBucketSelection(t *testing.T) {
-	standard := &codexRateLimitSnapshot{LimitID: stringPtr("codex")}
-	alternate := &codexRateLimitSnapshot{NormalModelSlug: stringPtr("gpt-5-codex")}
-	usage := codexUsageResponse{RateLimits: standard, ByLimitID: map[string]*codexRateLimitSnapshot{"codex": standard, "gpt-5-codex": alternate}}
-	got, err := codexSnapshotForModel("", false, usage)
-	if err != nil || got != standard {
-		t.Fatalf("default bucket=%p err=%v", got, err)
+func TestCodexQuotaUsesAllBucketsAndLegacyFallback(t *testing.T) {
+	ordinary, notSpent, spent := true, false, true
+	codexPrimary, codexSecondary := 20.0, 40.0
+	modelPrimary, modelSecondary := 80.0, 60.0
+	legacyExhausted := 100.0
+	standard := &codexRateLimitSnapshot{
+		Primary:      &codexRateWindow{UsedPercent: &codexPrimary},
+		Secondary:    &codexRateWindow{UsedPercent: &codexSecondary},
+		SpendReached: &notSpent,
 	}
-	got, err = codexSnapshotForModel("gpt-5-codex", true, usage)
-	if err != nil || got != alternate {
-		t.Fatalf("alternate bucket=%p err=%v", got, err)
+	model := &codexRateLimitSnapshot{
+		Primary:      &codexRateWindow{UsedPercent: &modelPrimary},
+		Secondary:    &codexRateWindow{UsedPercent: &modelSecondary},
+		SpendReached: &notSpent,
 	}
-	if _, err := codexSnapshotForModel("unknown", true, usage); err == nil {
-		t.Fatal("accepted an unmapped model")
+	usage := codexUsageResponse{
+		RateLimits: &codexRateLimitSnapshot{
+			Primary:      &codexRateWindow{UsedPercent: &legacyExhausted},
+			SpendReached: &notSpent,
+		},
+		ByLimitID: map[string]*codexRateLimitSnapshot{"codex": standard, "gpt-5-codex": model},
 	}
-	if _, err := codexSnapshotForModel("gpt-5-codex", true, codexUsageResponse{RateLimits: alternate}); err == nil {
-		t.Fatal("used the compatibility bucket to guess an explicit model")
+	got := codexQuotaFromUsage(&ordinary, usage)
+	if !got.Eligible || got.Headroom != 20 {
+		t.Fatalf("quota ignored the tightest reported bucket: %+v", got)
+	}
+
+	modelPrimary = 100
+	got = codexQuotaFromUsage(&ordinary, usage)
+	if got.Eligible || !got.Known || got.Headroom != 0 {
+		t.Fatalf("quota ignored an exhausted model bucket: %+v", got)
+	}
+
+	legacyPrimary, legacySecondary := 25.0, 50.0
+	legacy := &codexRateLimitSnapshot{
+		Primary:      &codexRateWindow{UsedPercent: &legacyPrimary},
+		Secondary:    &codexRateWindow{UsedPercent: &legacySecondary},
+		SpendReached: &notSpent,
+	}
+	got = codexQuotaFromUsage(&ordinary, codexUsageResponse{RateLimits: legacy})
+	if !got.Eligible || got.Headroom != 50 {
+		t.Fatalf("legacy quota fallback = %+v", got)
+	}
+
+	if got := codexQuotaFromUsage(&ordinary, codexUsageResponse{}); got.Eligible || got.Known {
+		t.Fatalf("missing quota was not unknown: %+v", got)
+	}
+	unknownSpend := &codexRateLimitSnapshot{Primary: &codexRateWindow{UsedPercent: &codexPrimary}}
+	unknownPrimary := &codexRateLimitSnapshot{Primary: &codexRateWindow{UsedPercent: &codexPrimary}}
+	if got := codexQuotaFromUsage(&ordinary, codexUsageResponse{ByLimitID: map[string]*codexRateLimitSnapshot{"codex": unknownPrimary, "unknown": unknownSpend}}); got.Eligible || got.Known {
+		t.Fatalf("unknown primary spend status was treated as eligible: %+v", got)
+	}
+	spentBucket := &codexRateLimitSnapshot{SpendReached: &spent}
+	if got := codexQuotaFromUsage(&ordinary, codexUsageResponse{ByLimitID: map[string]*codexRateLimitSnapshot{"codex": standard, "spent": spentBucket}}); got.Eligible || !got.Known {
+		t.Fatalf("spent bucket was ignored: %+v", got)
+	}
+}
+
+func TestCodexAdditionalBucketNullSpendUsesPrimaryStatus(t *testing.T) {
+	ordinary, notSpent := true, false
+	primaryUsed, additionalUsed := 20.0, 80.0
+	futureReset := 4102444800.0
+	primary := &codexRateLimitSnapshot{
+		Primary:      &codexRateWindow{UsedPercent: &primaryUsed, ResetsAt: &futureReset},
+		SpendReached: &notSpent,
+	}
+	additional := &codexRateLimitSnapshot{
+		Primary: &codexRateWindow{UsedPercent: &additionalUsed, ResetsAt: &futureReset},
+	}
+	usage := codexUsageResponse{ByLimitID: map[string]*codexRateLimitSnapshot{
+		"codex": primary, "codex_other": additional,
+	}}
+	if got := codexQuotaFromUsage(&ordinary, usage); !got.Eligible || got.Headroom != 20 {
+		t.Fatalf("native-shaped null additional spend status blocked ranking: %+v", got)
+	}
+
+	additionalUsed = 100
+	if got := codexQuotaFromUsage(&ordinary, usage); got.Eligible || !got.Known || got.Headroom != 0 {
+		t.Fatalf("exhausted additional window was not blocked: %+v", got)
+	}
+
+	additionalUsed = 80
+	primary.SpendReached = nil
+	if got := codexQuotaFromUsage(&ordinary, usage); got.Eligible || got.Known {
+		t.Fatalf("unknown primary spend status was treated as eligible: %+v", got)
+	}
+}
+
+func TestCodexFreshExhaustionSurvivesMalformedSibling(t *testing.T) {
+	ordinary, notSpent := true, false
+	futureReset, staleReset, exhausted := 4102444800.0, 1.0, 100.0
+	tests := []struct {
+		name      string
+		primary   *codexRateWindow
+		secondary *codexRateWindow
+	}{
+		{
+			name:      "exhausted window before malformed sibling",
+			primary:   &codexRateWindow{UsedPercent: &exhausted, ResetsAt: &futureReset},
+			secondary: &codexRateWindow{},
+		},
+		{
+			name:      "malformed sibling before exhausted window",
+			primary:   &codexRateWindow{},
+			secondary: &codexRateWindow{UsedPercent: &exhausted, ResetsAt: &futureReset},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot := &codexRateLimitSnapshot{
+				Primary: test.primary, Secondary: test.secondary, SpendReached: &notSpent,
+			}
+			got := codexQuotaFromUsage(&ordinary, codexUsageResponse{RateLimits: snapshot})
+			if !got.Subscription || !got.Known || got.Eligible || canLaunchExplicit(got) {
+				t.Fatalf("fresh exhaustion was lost beside malformed data: %+v", got)
+			}
+		})
+	}
+
+	staleOnly := &codexRateLimitSnapshot{
+		Primary:      &codexRateWindow{UsedPercent: &exhausted, ResetsAt: &staleReset},
+		SpendReached: &notSpent,
+	}
+	got := codexQuotaFromUsage(&ordinary, codexUsageResponse{RateLimits: staleOnly})
+	if !got.Subscription || got.Known || got.Eligible || !canLaunchExplicit(got) {
+		t.Fatalf("stale-only exhaustion was not kept unknown: %+v", got)
+	}
+}
+
+func TestCodexPlanIdentityGatesAutomaticAndUnknownQuotaSelection(t *testing.T) {
+	for _, plan := range []string{
+		"go", "plus", "pro", "prolite", "team", "self_serve_business_prolite",
+		"self_serve_business_usage_based", "business", "ent26", "enterprise_cbp_automation",
+		"enterprise_cbp_usage_based", "enterprise", "edu", "edu_plus", "edu_pro",
+	} {
+		if !codexSubscriptionPlan(plan) {
+			t.Errorf("did not recognize subscription plan %q", plan)
+		}
+	}
+	for _, plan := range []string{"", "free", "unknown-plan"} {
+		subscription := codexSubscriptionPlan(plan)
+		eligibleWithKnownUsage := quota{Subscription: subscription, Eligible: true}
+		eligibleAutomatically := eligibleWithKnownUsage.Subscription && eligibleWithKnownUsage.Eligible
+		unknownQuota := quota{Subscription: subscription}
+		if eligibleAutomatically || canLaunchExplicit(unknownQuota) {
+			t.Errorf("unverified plan %q passed selection: automatic=%v explicit=%v",
+				plan, eligibleAutomatically, canLaunchExplicit(unknownQuota))
+		}
+	}
+	if !canLaunchExplicit(quota{Subscription: codexSubscriptionPlan("plus")}) {
+		t.Fatal("verified paid identity should allow explicit launch when only quota is unknown")
 	}
 }
 
@@ -97,18 +231,21 @@ done
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	quota, err := probeCodex(account, "", false)
+	quota, err := probeCodex(account)
 	if err != nil || !quota.Eligible || quota.Headroom != 40 {
 		t.Fatalf("quota=%+v err=%v", quota, err)
 	}
 	t.Setenv("CODATOR_RATE_LIMITS_ERROR", "1")
-	quota, err = probeCodex(account, "", false)
+	quota, err = probeCodex(account)
 	if err != nil || !quota.Subscription || quota.Known || quota.Eligible || quota.Reason == "" {
 		t.Fatalf("rate-limit failure lost verified identity: quota=%+v err=%v", quota, err)
 	}
+	if !canLaunchExplicit(quota) {
+		t.Fatalf("verified paid identity with unknown quota cannot launch explicitly: %+v", quota)
+	}
 	t.Setenv("CODATOR_RATE_LIMITS_ERROR", "")
 	t.Setenv("CODATOR_SPEND_UNKNOWN", "1")
-	quota, err = probeCodex(account, "", false)
+	quota, err = probeCodex(account)
 	if err != nil || !quota.Subscription || quota.Known || quota.Eligible || quota.Reason != "spend control status is unknown" {
 		t.Fatalf("unknown spend-control status was treated as eligible: quota=%+v err=%v", quota, err)
 	}
@@ -124,20 +261,17 @@ done
 	}
 }
 
-func TestCodexFlagsBlockIdentityOverrides(t *testing.T) {
-	for _, args := range [][]string{{"--remote"}, {"-c", "model=other"}, {"-cmodel=other"}, {"--profile=other"}, {"-p", "other"}, {"-pother"}, {"-p=other"}, {"--with-api-key"}} {
-		if err := validateCodexLaunchArgs(args); err == nil {
-			t.Errorf("accepted unsafe args %q", args)
+func TestCodexProbeArgsForceSubscriptionProvider(t *testing.T) {
+	got := strings.Join(codexProbeArgs("app-server", "--listen", "stdio://"), " ")
+	for _, value := range []string{
+		`model_provider="openai"`,
+		`openai_base_url="https://chatgpt.com/backend-api/codex"`,
+		`chatgpt_base_url="https://chatgpt.com/backend-api"`,
+		`requires_openai_auth=true`,
+	} {
+		if !strings.Contains(got, value) {
+			t.Errorf("probe config is missing %q: %s", value, got)
 		}
-	}
-	if err := validateCodexLaunchArgs([]string{"--", "-c", "literal prompt"}); err != nil {
-		t.Fatalf("blocked positional args after --: %v", err)
-	}
-	if !strings.Contains(codexFileConfig, "cli_auth_credentials_store") {
-		t.Fatal("missing isolated file credential store")
-	}
-	if got := strings.Join(codexCLIArgs("login"), " "); !strings.Contains(got, `model_provider="openai"`) || !strings.Contains(got, `openai_base_url="https://chatgpt.com/backend-api/codex"`) || !strings.Contains(got, `chatgpt_base_url="https://chatgpt.com/backend-api"`) || !strings.Contains(got, `requires_openai_auth=true`) {
-		t.Fatalf("subscription provider overrides missing: %s", got)
 	}
 }
 

@@ -56,7 +56,7 @@ case "$*" in
     while IFS= read -r line; do
       case "$line" in
         *'"method":"initialize"'*) printf '%s\n' '{"id":1,"result":{}}' ;;
-        *'"method":"account/read"'*) printf '%s\n' '{"id":2,"result":{"account":{"type":"chatgpt"}}}' ;;
+        *'"method":"account/read"'*) printf '%s\n' '{"id":2,"result":{"account":{"type":"chatgpt","planType":"plus"}}}' ;;
         *'"method":"account/rateLimits/read"'*)
           if [ "$profile" = a-blocked ]; then
             /bin/sleep 120 &
@@ -254,7 +254,7 @@ wait
 	deadline := started.Add(3 * time.Second)
 	probeDone := make(chan error, 1)
 	go func() {
-		_, probeErr := probeCodexContext(ctx, account, "", false)
+		_, probeErr := probeCodexContext(ctx, account)
 		probeDone <- probeErr
 	}()
 	startupDeadline := time.Now().Add(time.Second)

@@ -3,21 +3,23 @@ package main
 import (
 	"errors"
 	"fmt"
-	"strings"
 )
 
 const usage = `Usage:
   codator login codex NAME [-- native-login-options]
   codator login claude NAME [-- native-login-options]
   codator status [codex|claude]
-  codator codex [--account NAME] [--] [native arguments]
-  codator claude [--account NAME] [--] [native arguments]
+  codator codex [--account NAME] [native arguments]
+  codator claude [--account NAME] [native arguments]
   codator --help
+
+For launch, Codator consumes only a leading --account NAME pair. Every
+remaining argument, including --, is passed unchanged to the native CLI.
 
 Examples:
   codator login codex personal
   codator status
-  codator claude --account work -- --model sonnet`
+  codator claude --account work --model sonnet`
 
 var errUsage = errors.New("invalid command")
 
@@ -65,84 +67,12 @@ func parseInvocation(args []string) (invocation, error) {
 
 func parseLaunchArgs(args []string) (string, []string, error) {
 	var account string
-	var native []string
-	seenAccount, afterSeparator := false, false
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if !afterSeparator && arg == "--" {
-			afterSeparator = true
-			continue
+	start := 0
+	if len(args) > 0 && args[0] == "--account" {
+		if len(args) < 2 || !validLabel(args[1]) {
+			return "", nil, errors.New("--account needs one valid name")
 		}
-		if !afterSeparator && arg == "--account" {
-			if seenAccount || i+1 == len(args) || !validLabel(args[i+1]) {
-				return "", nil, errors.New("--account needs one valid name")
-			}
-			seenAccount = true
-			account = args[i+1]
-			i++
-			continue
-		}
-		native = append(native, arg)
+		account, start = args[1], 2
 	}
-	return account, native, nil
-}
-
-func modelFromArgs(args []string, short, long string) (string, bool, error) {
-	model, explicit := "", false
-	flags := []string{long}
-	if short != "" {
-		flags = append(flags, short)
-	}
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if arg == "--" {
-			break
-		}
-		for _, flag := range flags {
-			switch {
-			case arg == flag:
-				if i+1 == len(args) || args[i+1] == "--" || args[i+1] == "" || strings.HasPrefix(args[i+1], "-") {
-					return "", false, fmt.Errorf("%s needs a model name", flag)
-				}
-				model, explicit = args[i+1], true
-				i++
-			case strings.HasPrefix(arg, flag+"="):
-				model, explicit = strings.TrimPrefix(arg, flag+"="), true
-				if model == "" {
-					return "", false, fmt.Errorf("%s needs a model name", flag)
-				}
-			case flag == short && short != "" && len(arg) > len(flag) && strings.HasPrefix(arg, flag) && arg[len(flag)] != '=':
-				model, explicit = arg[len(flag):], true
-			}
-		}
-	}
-	return model, explicit, nil
-}
-
-func rejectOptions(args []string, forbidden map[string]bool) error {
-	for _, arg := range args {
-		if arg == "--" {
-			break
-		}
-		flag := arg
-		if i := strings.IndexByte(flag, '='); i >= 0 {
-			flag = flag[:i]
-		}
-		if forbidden[flag] || compactForbiddenShort(arg, forbidden) {
-			return fmt.Errorf("native option %s is disabled by account isolation", flag)
-		}
-	}
-	return nil
-}
-
-func compactForbiddenShort(arg string, forbidden map[string]bool) bool {
-	if len(arg) < 3 || arg[0] != '-' || arg[1] == '-' {
-		return false
-	}
-	for flag := range forbidden {
-		if len(flag) == 2 && strings.HasPrefix(arg, flag) {
-			return true
-		}
-	}
-	return false
+	return account, args[start:], nil
 }

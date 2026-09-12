@@ -6,16 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 )
 
-const codexFileConfig = `cli_auth_credentials_store="file"`
-
 var codexForcedConfig = []string{
-	codexFileConfig,
 	`model_provider="openai"`,
 	`openai_base_url="https://chatgpt.com/backend-api/codex"`,
 	`chatgpt_base_url="https://chatgpt.com/backend-api"`,
@@ -27,12 +25,6 @@ var codexAuthEnv = []string{
 	"OPENAI_FEDERATION_RULE_ID", "OPENAI_IDENTITY_TOKEN_FILE",
 	"CODEX_REFRESH_TOKEN_URL_OVERRIDE", "CODEX_REVOKE_TOKEN_URL_OVERRIDE",
 	"CODEX_APP_SERVER_LOGIN_CLIENT_ID", "CODEX_APP_SERVER_LOGIN_ISSUER",
-}
-
-var codexUnsafeFlags = map[string]bool{
-	"--remote": true, "--remote-auth-token-env": true, "--profile": true, "-p": true,
-	"--config": true, "-c": true, "--oss": true, "--local-provider": true,
-	"--with-api-key": true, "--with-access-token": true,
 }
 
 type rpcRequest struct {
@@ -49,7 +41,8 @@ type rpcResponse struct {
 
 type codexAccountResponse struct {
 	Account *struct {
-		Type string `json:"type"`
+		Type     string `json:"type"`
+		PlanType string `json:"planType"`
 	} `json:"account"`
 }
 
@@ -60,11 +53,9 @@ type codexUsageResponse struct {
 }
 
 type codexRateLimitSnapshot struct {
-	LimitID         *string          `json:"limitId"`
-	NormalModelSlug *string          `json:"normalModelSlug"`
-	Primary         *codexRateWindow `json:"primary"`
-	Secondary       *codexRateWindow `json:"secondary"`
-	SpendReached    *bool            `json:"spendControlReached"`
+	Primary      *codexRateWindow `json:"primary"`
+	Secondary    *codexRateWindow `json:"secondary"`
+	SpendReached *bool            `json:"spendControlReached"`
 }
 
 type codexRateWindow struct {
@@ -74,21 +65,15 @@ type codexRateWindow struct {
 }
 
 func codexEnv(nativeDir string, base []string) []string {
-	return buildEnv(base, codexAuthEnv, map[string]string{
-		"CODEX_HOME":        nativeDir,
-		"CODEX_SQLITE_HOME": nativeDir,
-	})
+	overrides := map[string]string{}
+	if nativeDir != "" {
+		overrides["CODEX_HOME"] = nativeDir
+		overrides["CODEX_SQLITE_HOME"] = nativeDir
+	}
+	return buildEnv(base, codexAuthEnv, overrides)
 }
 
-func validateCodexLoginArgs(args []string) error {
-	return rejectOptions(args, codexUnsafeFlags)
-}
-
-func validateCodexLaunchArgs(args []string) error {
-	return rejectOptions(args, codexUnsafeFlags)
-}
-
-func codexCLIArgs(args ...string) []string {
+func codexProbeArgs(args ...string) []string {
 	all := make([]string, 0, 2*len(codexForcedConfig)+len(args))
 	for _, config := range codexForcedConfig {
 		all = append(all, "--config", config)
@@ -96,22 +81,22 @@ func codexCLIArgs(args ...string) []string {
 	return append(all, args...)
 }
 
-func probeCodex(account Account, model string, explicitModel bool) (quota, error) {
-	return probeCodexWithContext(context.Background(), account, model, explicitModel)
+func probeCodex(account Account) (quota, error) {
+	return probeCodexWithContext(context.Background(), account)
 }
 
-func probeCodexWithContext(parent context.Context, account Account, model string, explicitModel bool) (quota, error) {
+func probeCodexWithContext(parent context.Context, account Account) (quota, error) {
 	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 	defer cancel()
-	return probeCodexContext(ctx, account, model, explicitModel)
+	return probeCodexContext(ctx, account)
 }
 
-func probeCodexContext(ctx context.Context, account Account, model string, explicitModel bool) (quota, error) {
+func probeCodexContext(ctx context.Context, account Account) (quota, error) {
 	path, err := findNative("codex")
 	if err != nil {
 		return quota{}, err
 	}
-	cmd := probeCommand(ctx, path, codexCLIArgs("app-server", "--listen", "stdio://")...)
+	cmd := probeCommand(ctx, path, codexProbeArgs("app-server", "--listen", "stdio://")...)
 	cmd.Env = codexEnv(account.NativeDir, os.Environ())
 	cmd.Dir = account.NativeDir
 	cmd.Stderr = io.Discard
@@ -159,6 +144,9 @@ func probeCodexContext(ctx context.Context, account Account, model string, expli
 	if accountInfo.Account.Type != "chatgpt" {
 		return quota{Known: true, Reason: "account is not a ChatGPT subscription"}, nil
 	}
+	if !codexSubscriptionPlan(accountInfo.Account.PlanType) {
+		return quota{Reason: "account plan is not a verified subscription"}, nil
+	}
 	verified := quota{Subscription: true}
 	if err := sendRPC(encoder, "account/rateLimits/read", 3, nil); err != nil {
 		verified.Reason = "Codex usage check failed"
@@ -183,28 +171,19 @@ func probeCodexContext(ctx context.Context, account Account, model string, expli
 		result.Subscription = true
 		return result, nil
 	}
-	snapshot, err := codexSnapshotForModel(model, explicitModel, usage)
-	if err != nil {
-		verified.Reason = err.Error()
-		return verified, nil
+	return codexQuotaFromUsage(usage.OrdinaryUsageAllowed, usage), nil
+}
+
+func codexSubscriptionPlan(planType string) bool {
+	switch planType {
+	case "go", "plus", "pro", "prolite", "team",
+		"self_serve_business_prolite", "self_serve_business_usage_based", "business", "ent26",
+		"enterprise_cbp_automation", "enterprise_cbp_usage_based", "enterprise",
+		"edu", "edu_plus", "edu_pro":
+		return true
+	default:
+		return false
 	}
-	if snapshot.SpendReached == nil {
-		verified.Reason = "spend control status is unknown"
-		return verified, nil
-	}
-	if *snapshot.SpendReached {
-		result := evaluateUsage(usage.OrdinaryUsageAllowed, snapshot.SpendReached, nil)
-		result.Subscription = true
-		return result, nil
-	}
-	used, ok := codexWindowPercentages(snapshot)
-	if !ok {
-		verified.Reason = "usage windows are missing, malformed, or stale"
-		return verified, nil
-	}
-	q := evaluateUsage(usage.OrdinaryUsageAllowed, snapshot.SpendReached, used)
-	q.Subscription = true
-	return q, nil
 }
 
 func sendRPC(encoder *json.Encoder, method string, id int, params any) error {
@@ -239,57 +218,89 @@ func readRPC(scanner *bufio.Scanner, expectedID int) (json.RawMessage, error) {
 	return nil, errors.New("Codex app-server closed before responding")
 }
 
-func codexSnapshotForModel(model string, explicit bool, usage codexUsageResponse) (*codexRateLimitSnapshot, error) {
-	if !explicit || model == "default" {
-		if usage.ByLimitID != nil {
-			if snapshot := usage.ByLimitID["codex"]; snapshot != nil {
-				return snapshot, nil
-			}
-			return nil, errors.New("no unambiguous standard Codex usage bucket")
-		}
-		if usage.RateLimits != nil && usage.RateLimits.LimitID != nil && *usage.RateLimits.LimitID == "codex" {
-			return usage.RateLimits, nil
-		}
-		return nil, errors.New("no unambiguous standard Codex usage bucket")
+func codexQuotaFromUsage(ordinary *bool, usage codexUsageResponse) quota {
+	if ordinary == nil || !*ordinary {
+		return evaluateUsage(ordinary, nil, nil)
 	}
-	if usage.ByLimitID == nil {
-		return nil, errors.New("no usage bucket for the requested model")
+	buckets := make([]*codexRateLimitSnapshot, 0, len(usage.ByLimitID))
+	var primary *codexRateLimitSnapshot
+	if usage.ByLimitID != nil {
+		primary = usage.ByLimitID["codex"]
+		for _, bucket := range usage.ByLimitID {
+			buckets = append(buckets, bucket)
+		}
+	} else if usage.RateLimits != nil {
+		primary = usage.RateLimits
+		buckets = append(buckets, usage.RateLimits)
 	}
-	var match *codexRateLimitSnapshot
-	for id, snapshot := range usage.ByLimitID {
-		if snapshot == nil {
+	if len(buckets) == 0 {
+		return quota{Subscription: true, Reason: "Codex usage buckets are missing"}
+	}
+
+	spendUnknown := primary == nil || primary.SpendReached == nil
+	spendReached := primary != nil && primary.SpendReached != nil && *primary.SpendReached
+	var windowsUnknown bool
+	var used []float64
+	for _, bucket := range buckets {
+		if bucket == nil {
+			windowsUnknown = true
 			continue
 		}
-		if id == model || snapshot.NormalModelSlug != nil && *snapshot.NormalModelSlug == model {
-			if match != nil {
-				return nil, errors.New("model matches multiple usage buckets")
-			}
-			match = snapshot
+		if bucket.SpendReached != nil && *bucket.SpendReached {
+			spendReached = true
+		}
+		windows, ok := codexWindowPercentages(bucket)
+		used = append(used, windows...)
+		if !ok {
+			windowsUnknown = true
 		}
 	}
-	if match == nil {
-		return nil, errors.New("no unique usage bucket for the requested model")
+	if spendReached {
+		reached := true
+		q := evaluateUsage(ordinary, &reached, nil)
+		q.Subscription = true
+		return q
 	}
-	return match, nil
+	spendControl := false
+	q := evaluateUsage(ordinary, &spendControl, used)
+	if q.Known && !q.Eligible {
+		q.Subscription = true
+		return q
+	}
+	if spendUnknown {
+		q = quota{Reason: "spend control status is unknown"}
+	} else if windowsUnknown {
+		q = quota{Reason: "usage windows are missing, malformed, or stale"}
+	}
+	q.Subscription = true
+	return q
 }
 
 func codexWindowPercentages(snapshot *codexRateLimitSnapshot) ([]float64, bool) {
 	var used []float64
+	valid := true
 	for _, window := range []*codexRateWindow{snapshot.Primary, snapshot.Secondary} {
 		if window == nil {
 			continue
 		}
 		if window.UsedPercent == nil {
-			return nil, false
+			valid = false
+			continue
 		}
 		percent := *window.UsedPercent
-		if window.WindowDurationMins != nil && (*window.WindowDurationMins < 0 || *window.WindowDurationMins == 0 && percent != 0) {
-			return nil, false
+		if math.IsNaN(percent) || math.IsInf(percent, 0) || percent < 0 || percent > 100 {
+			valid = false
+			continue
 		}
-		if window.ResetsAt != nil && *window.ResetsAt < 0 || window.ResetsAt != nil && *window.ResetsAt > 0 && *window.ResetsAt <= float64(time.Now().Unix()) {
-			return nil, false
+		if window.WindowDurationMins != nil && (*window.WindowDurationMins < 0 || *window.WindowDurationMins == 0 && percent != 0) {
+			valid = false
+			continue
+		}
+		if window.ResetsAt != nil && (*window.ResetsAt < 0 || *window.ResetsAt > 0 && *window.ResetsAt <= float64(time.Now().Unix())) {
+			valid = false
+			continue
 		}
 		used = append(used, percent)
 	}
-	return used, len(used) > 0
+	return used, valid && len(used) > 0
 }

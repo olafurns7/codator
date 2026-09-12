@@ -34,8 +34,12 @@ var claudeBlockedEnv = map[string]bool{
 }
 
 func claudeEnv(nativeDir string, base []string) []string {
-	if absolute, err := filepath.Abs(nativeDir); err == nil {
-		nativeDir = absolute
+	overrides := map[string]string{}
+	if nativeDir != "" {
+		if absolute, err := filepath.Abs(nativeDir); err == nil {
+			nativeDir = absolute
+		}
+		overrides["CLAUDE_CONFIG_DIR"] = nativeDir
 	}
 	filtered := make([]string, 0, len(base))
 	for _, item := range base {
@@ -44,7 +48,7 @@ func claudeEnv(nativeDir string, base []string) []string {
 			filtered = append(filtered, item)
 		}
 	}
-	return buildEnv(filtered, nil, map[string]string{"CLAUDE_CONFIG_DIR": nativeDir})
+	return buildEnv(filtered, nil, overrides)
 }
 
 func claudeEnvDenied(key string) bool {
@@ -90,64 +94,6 @@ func claudeProbeEnv(nativeDir string) []string {
 	}
 	base = append(base, "DO_NOT_TRACK=1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1")
 	return claudeEnv(nativeDir, base)
-}
-
-var claudeLoginForbidden = map[string]bool{
-	"--console": true, "--api-key": true, "--api-key-env": true, "--use-api-key": true,
-	"--auth-token": true, "--oauth-token": true, "--bare": true,
-	"--apiKey": true, "--apiKeyEnv": true, "--authToken": true,
-}
-
-var claudeLaunchForbidden = map[string]bool{
-	"--settings": true, "--setting-sources": true, "--settingSources": true,
-	"--env": true, "--env-file": true, "--api-key": true, "--api-key-env": true,
-	"--auth-token": true, "--oauth-token": true, "--base-url": true, "--baseUrl": true,
-	"--provider": true, "--billing": true, "--bare": true, "--console": true,
-	"--use-bedrock": true, "--use-vertex": true, "--use-foundry": true,
-	"--use-mantle": true, "--use-anthropic-aws": true,
-	"--remote": true, "--remote-control": true, "--remoteControl": true,
-	"--remote-session-id": true, "--teleport": true, "--teleport-session-id": true,
-	"--plugin-dir": true, "--pluginDir": true, "--mcp-config": true, "--mcpConfig": true,
-	"--apiKey": true, "--apiKeyEnv": true, "--authToken": true,
-}
-
-func validateClaudeLoginArgs(args []string) error {
-	if len(args) > 0 && args[0] == "auth" {
-		return errors.New("native Claude auth commands must use codator login")
-	}
-	if err := rejectOptions(args, claudeLoginForbidden); err != nil {
-		return err
-	}
-	return rejectOptions(args, claudeLaunchForbidden)
-}
-
-func validateClaudeLaunchArgs(args []string) error {
-	if len(args) > 0 {
-		switch args[0] {
-		case "auth":
-			return errors.New("native Claude auth commands must use codator login")
-		case "remote", "teleport":
-			return errors.New("native Claude remote sessions are disabled by account isolation")
-		}
-	}
-	for _, arg := range args {
-		if arg == "--" {
-			break
-		}
-		if arg == "--no-safe-mode" || strings.HasPrefix(arg, "--safe-mode=") &&
-			!strings.EqualFold(strings.TrimPrefix(arg, "--safe-mode="), "true") {
-			return errors.New("Claude safe mode cannot be disabled")
-		}
-	}
-	return rejectOptions(args, claudeLaunchForbidden)
-}
-
-func claudeCLIArgs(args ...string) []string {
-	out := make([]string, 0, len(args)+1)
-	if len(args) < 2 || args[0] != "auth" || args[1] != "login" {
-		out = append(out, "--safe-mode")
-	}
-	return append(out, args...)
 }
 
 type claudeControlRequest struct {
@@ -215,11 +161,11 @@ func awaitClaudeResponse(frames <-chan []byte, streamDone, deadline <-chan struc
 	}
 }
 
-func probeClaude(account Account, model string, explicitModel bool) (quota, error) {
-	return probeClaudeWithContext(context.Background(), account, model, explicitModel)
+func probeClaude(account Account) (quota, error) {
+	return probeClaudeWithContext(context.Background(), account)
 }
 
-func probeClaudeWithContext(parent context.Context, account Account, model string, explicitModel bool) (quota, error) {
+func probeClaudeWithContext(parent context.Context, account Account) (quota, error) {
 	if account.Provider != "claude" || account.Err != nil || !filepath.IsAbs(account.NativeDir) {
 		return quota{}, errors.New("Claude account profile is unavailable")
 	}
@@ -310,7 +256,7 @@ func probeClaudeWithContext(parent context.Context, account Account, model strin
 	if err != nil {
 		return quota{}, err
 	}
-	return parseClaudeQuota(payload, model, explicitModel, time.Now())
+	return parseClaudeQuota(payload, time.Now())
 }
 
 type claudeUsageResponse struct {
@@ -334,7 +280,7 @@ type claudeUsageWindow struct {
 	ResetsAt    *string  "json:\"resets_at\""
 }
 
-func parseClaudeQuota(payload json.RawMessage, model string, explicitModel bool, now time.Time) (quota, error) {
+func parseClaudeQuota(payload json.RawMessage, now time.Time) (quota, error) {
 	if len(payload) == 0 || string(payload) == "null" {
 		return quota{}, errors.New("Claude usage response is missing")
 	}
@@ -363,12 +309,16 @@ func parseClaudeQuota(payload json.RawMessage, model string, explicitModel bool,
 	if !*usage.RateLimitsAvailable {
 		return quota{Subscription: true, Reason: "Claude rate limits are unavailable"}, nil
 	}
-	values, reason := claudeUsageWindows(usage.RateLimits, model, explicitModel, now)
+	values, reason := claudeUsageWindows(usage.RateLimits, now)
+	allowed := true
+	result := evaluateUsage(&allowed, nil, values)
+	if result.Known && !result.Eligible {
+		result.Subscription = true
+		return result, nil
+	}
 	if reason != "" {
 		return quota{Subscription: true, Reason: reason}, nil
 	}
-	allowed := true
-	result := evaluateUsage(&allowed, nil, values)
 	result.Subscription = true
 	return result, nil
 }
@@ -382,11 +332,12 @@ func knownClaudeSubscription(value string) bool {
 	}
 }
 
-func claudeUsageWindows(limits *claudeRateLimits, model string, explicitModel bool, now time.Time) ([]float64, string) {
+func claudeUsageWindows(limits *claudeRateLimits, now time.Time) ([]float64, string) {
 	if limits == nil {
 		return nil, ""
 	}
 	values := make([]float64, 0, 8)
+	var firstReason string
 	add := func(window *claudeUsageWindow) string {
 		if window == nil {
 			return ""
@@ -403,7 +354,7 @@ func claudeUsageWindows(limits *claudeRateLimits, model string, explicitModel bo
 			if err != nil {
 				return "Claude usage window reset time is malformed"
 			}
-			if used > 0 && !reset.After(now) {
+			if !reset.After(now) {
 				return "Claude usage window is stale"
 			}
 		} else if used > 0 {
@@ -412,46 +363,20 @@ func claudeUsageWindows(limits *claudeRateLimits, model string, explicitModel bo
 		values = append(values, used)
 		return ""
 	}
+	record := func(window *claudeUsageWindow) {
+		if reason := add(window); firstReason == "" && reason != "" {
+			firstReason = reason
+		}
+	}
 	for _, window := range []*claudeUsageWindow{limits.FiveHour, limits.SevenDay, limits.SevenDayOAuthApps} {
-		if reason := add(window); reason != "" {
-			return nil, reason
-		}
+		record(window)
 	}
-	family := claudeModelFamily(model)
-	if !explicitModel || family == "" || family == "opus" {
-		if reason := add(limits.SevenDayOpus); reason != "" {
-			return nil, reason
-		}
-	}
-	if !explicitModel || family == "" || family == "sonnet" {
-		if reason := add(limits.SevenDaySonnet); reason != "" {
-			return nil, reason
-		}
-	}
+	record(limits.SevenDayOpus)
+	record(limits.SevenDaySonnet)
 	if limits.ModelScoped != nil {
 		for _, window := range *limits.ModelScoped {
-			if explicitModel && !claudeModelScopeApplies(window.DisplayName, family) {
-				continue
-			}
-			if reason := add(&window); reason != "" {
-				return nil, reason
-			}
+			record(&window)
 		}
 	}
-	return values, ""
-}
-
-func claudeModelFamily(model string) string {
-	model = strings.ToLower(model)
-	for _, family := range []string{"opus", "sonnet", "haiku"} {
-		if strings.Contains(model, family) {
-			return family
-		}
-	}
-	return ""
-}
-
-func claudeModelScopeApplies(name, family string) bool {
-	scopeFamily := claudeModelFamily(name)
-	return family == "" || scopeFamily == "" || family == scopeFamily
+	return values, firstReason
 }

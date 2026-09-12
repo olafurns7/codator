@@ -10,6 +10,9 @@ import (
 )
 
 func execute(inv invocation) (int, error) {
+	if inv.verb == "launch" && nativeInfoArgs(inv.provider, inv.args) {
+		return 0, nativeInfo(inv)
+	}
 	store, err := storeFromEnv()
 	if err != nil {
 		return 1, err
@@ -30,14 +33,35 @@ func execute(inv invocation) (int, error) {
 	}
 }
 
-func login(store *Store, inv invocation) error {
-	if inv.provider == "codex" {
-		if err := validateCodexLoginArgs(inv.args); err != nil {
-			return err
-		}
-	} else if err := validateClaudeLoginArgs(inv.args); err != nil {
+func nativeInfoArgs(provider string, args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch provider {
+	case "codex":
+		return args[0] == "-h" || args[0] == "--help" || args[0] == "-V" || args[0] == "--version"
+	case "claude":
+		return args[0] == "-h" || args[0] == "--help" || args[0] == "-v" || args[0] == "--version"
+	default:
+		return false
+	}
+}
+
+func nativeInfo(inv invocation) error {
+	path, err := findNative(inv.provider)
+	if err != nil {
 		return err
 	}
+	var env []string
+	if inv.provider == "codex" {
+		env = codexEnv("", os.Environ())
+	} else {
+		env = claudeEnv("", os.Environ())
+	}
+	return execNative(nil, path, inv.args, env)
+}
+
+func login(store *Store, inv invocation) error {
 	path, err := findNative(inv.provider)
 	if err != nil {
 		return err
@@ -56,7 +80,7 @@ func login(store *Store, inv invocation) error {
 	}
 	if inv.provider == "codex" {
 		args := append([]string{"login"}, inv.args...)
-		return execNative(lock, path, codexCLIArgs(args...), codexEnv(account.NativeDir, os.Environ()))
+		return execNative(lock, path, args, codexEnv(account.NativeDir, os.Environ()))
 	}
 	args := append([]string{"auth", "login"}, inv.args...)
 	return execNative(lock, path, args, claudeEnv(account.NativeDir, os.Environ()))
@@ -95,7 +119,7 @@ func status(store *Store, out io.Writer, providers ...string) error {
 				fmt.Fprintf(out, "%s %s: unknown (cannot lock profile)\n", provider, account.Name)
 				continue
 			}
-			q, err := probeAccount(signals.ctx, provider, account, "", false)
+			q, err := probeAccount(signals.ctx, provider, account)
 			lock.Close()
 			if signalErr := signals.ctx.Err(); signalErr != nil {
 				return signalErr
@@ -128,17 +152,6 @@ func launch(store *Store, inv invocation) error {
 	if err := signals.ctx.Err(); err != nil {
 		return err
 	}
-	if inv.provider == "codex" {
-		if err := validateCodexLaunchArgs(inv.args); err != nil {
-			return err
-		}
-	} else if err := validateClaudeLaunchArgs(inv.args); err != nil {
-		return err
-	}
-	model, explicitModel, err := launchModel(inv.provider, inv.args)
-	if err != nil {
-		return err
-	}
 	path, err := findNative(inv.provider)
 	if err != nil {
 		return err
@@ -154,29 +167,12 @@ func launch(store *Store, inv invocation) error {
 		return err
 	}
 	if inv.account != "" {
-		return launchExplicit(signals, store, path, inv, model, explicitModel, accounts)
+		return launchExplicit(signals, store, path, inv, accounts)
 	}
-	return launchBest(signals, store, path, inv, model, explicitModel, accounts)
+	return launchBest(signals, store, path, inv, accounts)
 }
 
-func launchModel(provider string, args []string) (string, bool, error) {
-	short := "-m"
-	if provider == "claude" {
-		short = ""
-	}
-	model, explicit, err := modelFromArgs(args, short, "--model")
-	if err != nil {
-		return "", false, err
-	}
-	if provider == "claude" && !explicit {
-		if envModel := strings.TrimSpace(os.Getenv("ANTHROPIC_MODEL")); envModel != "" {
-			return envModel, true, nil
-		}
-	}
-	return model, explicit, nil
-}
-
-func launchExplicit(signals *probeSignalScope, store *Store, path string, inv invocation, model string, explicitModel bool, accounts []Account) error {
+func launchExplicit(signals *probeSignalScope, store *Store, path string, inv invocation, accounts []Account) error {
 	var selected *Account
 	for i := range accounts {
 		if accounts[i].Name == inv.account {
@@ -195,7 +191,7 @@ func launchExplicit(signals *probeSignalScope, store *Store, path string, inv in
 		return err
 	}
 	defer lock.Close()
-	q, err := probeAccount(signals.ctx, inv.provider, *selected, model, explicitModel)
+	q, err := probeAccount(signals.ctx, inv.provider, *selected)
 	if signalErr := signals.ctx.Err(); signalErr != nil {
 		return signalErr
 	}
@@ -219,7 +215,7 @@ type lockedCandidate struct {
 	lock *AccountLock
 }
 
-func launchBest(signals *probeSignalScope, store *Store, path string, inv invocation, model string, explicitModel bool, accounts []Account) error {
+func launchBest(signals *probeSignalScope, store *Store, path string, inv invocation, accounts []Account) error {
 	var usable []lockedCandidate
 	var skipped []string
 	for _, account := range accounts {
@@ -240,7 +236,7 @@ func launchBest(signals *probeSignalScope, store *Store, path string, inv invoca
 			skipped = append(skipped, account.Name+": lock failed")
 			continue
 		}
-		q, err := probeAccount(signals.ctx, inv.provider, account, model, explicitModel)
+		q, err := probeAccount(signals.ctx, inv.provider, account)
 		if signalErr := signals.ctx.Err(); signalErr != nil {
 			lock.Close()
 			closeCandidateLocks(usable)
@@ -301,24 +297,24 @@ func quotaReason(q quota) string {
 	return "usage unknown"
 }
 
-func probeAccount(ctx context.Context, provider string, account Account, model string, explicitModel bool) (quota, error) {
+func probeAccount(ctx context.Context, provider string, account Account) (quota, error) {
 	if provider == "codex" {
-		return probeCodexWithContext(ctx, account, model, explicitModel)
+		return probeCodexWithContext(ctx, account)
 	}
-	return probeClaudeWithContext(ctx, account, model, explicitModel)
+	return probeClaudeWithContext(ctx, account)
 }
 
 func execSelected(signals *probeSignalScope, lock *AccountLock, path, provider string, nativeArgs []string, account Account, q quota) error {
 	if signals.stopListening() {
 		return context.Canceled
 	}
-	if q.Known {
-		fmt.Fprintf(os.Stderr, "codator: using %s account %s\n", provider, account.Name)
-	} else {
-		fmt.Fprintf(os.Stderr, "codator: using %s account %s (usage unknown)\n", provider, account.Name)
+	usage := ""
+	if !q.Known {
+		usage = " (usage unknown)"
 	}
+	fmt.Fprintf(os.Stderr, "codator: using %s account %s%s\n", provider, account.Name, usage)
 	if provider == "codex" {
-		return execNative(lock, path, codexCLIArgs(nativeArgs...), codexEnv(account.NativeDir, os.Environ()))
+		return execNative(lock, path, nativeArgs, codexEnv(account.NativeDir, os.Environ()))
 	}
-	return execNative(lock, path, claudeCLIArgs(nativeArgs...), claudeEnv(account.NativeDir, os.Environ()))
+	return execNative(lock, path, nativeArgs, claudeEnv(account.NativeDir, os.Environ()))
 }

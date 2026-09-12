@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func TestClaudeEnvAndArgsSafety(t *testing.T) {
+func TestClaudeEnvSanitizesInheritedAuth(t *testing.T) {
 	env := envMap(claudeEnv("profiles/work", []string{
 		"PATH=/usr/bin", "TERM=xterm", "GITHUB_TOKEN=keep",
 		"CLAUDE_CONFIG_DIR=/tmp/other", "ANTHROPIC_API_KEY=fake",
@@ -28,39 +28,6 @@ func TestClaudeEnvAndArgsSafety(t *testing.T) {
 	if env["PATH"] != "/usr/bin" || env["TERM"] != "xterm" || env["GITHUB_TOKEN"] != "keep" {
 		t.Fatalf("ordinary environment was not preserved: %#v", env)
 	}
-
-	for _, args := range [][]string{
-		{"--console"}, {"--api-key=fake"}, {"--bare"}, {"--settings", "/tmp/settings.json"},
-		{"--setting-sources=project"}, {"--env", "ANTHROPIC_API_KEY=fake"},
-		{"--provider=bedrock"}, {"--base-url=https://example.invalid"},
-	} {
-		if err := validateClaudeLoginArgs(args); err == nil {
-			t.Errorf("login args %q were accepted", args)
-		}
-	}
-	if err := validateClaudeLoginArgs([]string{"--", "--console"}); err != nil {
-		t.Fatalf("login separator was ignored: %v", err)
-	}
-	for _, args := range [][]string{
-		{"--settings=/tmp/settings.json"}, {"--env", "ANTHROPIC_API_KEY=fake"},
-		{"--no-safe-mode"}, {"--safe-mode=false"}, {"--remote"}, {"--bare"}, {"auth", "login"},
-	} {
-		if err := validateClaudeLaunchArgs(args); err == nil {
-			t.Errorf("launch args %q were accepted", args)
-		}
-	}
-	if err := validateClaudeLaunchArgs([]string{"-p", "print the literal text --settings and --remote"}); err != nil {
-		t.Fatalf("harmless prompt text was rejected: %v", err)
-	}
-	if err := validateClaudeLaunchArgs([]string{"--", "--settings=/tmp/settings.json"}); err != nil {
-		t.Fatalf("launch separator was ignored: %v", err)
-	}
-	if got := strings.Join(claudeCLIArgs("--model", "sonnet"), " "); got != "--safe-mode --model sonnet" {
-		t.Fatalf("ordinary launch args = %q", got)
-	}
-	if got := strings.Join(claudeCLIArgs("auth", "login"), " "); got != "auth login" {
-		t.Fatalf("login args = %q", got)
-	}
 }
 
 func TestParseClaudeQuotaUnknownZeroAndStale(t *testing.T) {
@@ -74,6 +41,7 @@ func TestParseClaudeQuotaUnknownZeroAndStale(t *testing.T) {
 		wantHeadroom float64
 	}{
 		{"zero with unstarted reset", "\"rate_limits\":{\"five_hour\":{\"utilization\":0,\"resets_at\":null}}", true, true, 100},
+		{"zero with stale reset", "\"rate_limits\":{\"five_hour\":{\"utilization\":0,\"resets_at\":\"2026-09-12T11:00:00Z\"}}", false, false, 0},
 		{"missing utilization", "\"rate_limits\":{\"five_hour\":{}}", false, false, 0},
 		{"missing reset with nonzero use", "\"rate_limits\":{\"five_hour\":{\"utilization\":20,\"resets_at\":null}}", false, false, 0},
 		{"stale nonzero window", "\"rate_limits\":{\"five_hour\":{\"utilization\":20,\"resets_at\":\"2026-09-12T11:00:00Z\"}}", false, false, 0},
@@ -83,7 +51,7 @@ func TestParseClaudeQuotaUnknownZeroAndStale(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			raw := json.RawMessage("{\"subscription_type\":\"max\",\"rate_limits_available\":true," + test.rates + "}")
-			got, err := parseClaudeQuota(raw, "", false, now)
+			got, err := parseClaudeQuota(raw, now)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -96,21 +64,21 @@ func TestParseClaudeQuotaUnknownZeroAndStale(t *testing.T) {
 		})
 	}
 
-	malformed, err := parseClaudeQuota(json.RawMessage("{\"subscription_type\":\"team\",\"rate_limits_available\":true,\"rate_limits\":{\"five_hour\":{\"utilization\":\"bad\"}}}"), "", false, now)
+	malformed, err := parseClaudeQuota(json.RawMessage("{\"subscription_type\":\"team\",\"rate_limits_available\":true,\"rate_limits\":{\"five_hour\":{\"utilization\":\"bad\"}}}"), now)
 	if err != nil || !malformed.Subscription || malformed.Eligible || malformed.Known {
 		t.Fatalf("malformed usage did not preserve subscription: %#v, %v", malformed, err)
 	}
-	unavailable, err := parseClaudeQuota(json.RawMessage("{\"subscription_type\":\"team\",\"rate_limits_available\":false,\"rate_limits\":null}"), "", false, now)
+	unavailable, err := parseClaudeQuota(json.RawMessage("{\"subscription_type\":\"team\",\"rate_limits_available\":false,\"rate_limits\":null}"), now)
 	if err != nil || !unavailable.Subscription || unavailable.Eligible || unavailable.Known {
 		t.Fatalf("unavailable quota lost verified subscription: %#v, %v", unavailable, err)
 	}
-	unknownPlan, err := parseClaudeQuota(json.RawMessage("{\"subscription_type\":\"free\",\"rate_limits_available\":true,\"rate_limits\":{\"five_hour\":{\"utilization\":0}}}"), "", false, now)
+	unknownPlan, err := parseClaudeQuota(json.RawMessage("{\"subscription_type\":\"free\",\"rate_limits_available\":true,\"rate_limits\":{\"five_hour\":{\"utilization\":0}}}"), now)
 	if err != nil || unknownPlan.Subscription || unknownPlan.Eligible {
 		t.Fatalf("unknown plan was accepted: %#v, %v", unknownPlan, err)
 	}
 }
 
-func TestClaudeModelWindowSelection(t *testing.T) {
+func TestClaudeQuotaIncludesAllModelWindows(t *testing.T) {
 	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
 	raw := json.RawMessage("{\"subscription_type\":\"max\",\"rate_limits_available\":true,\"rate_limits\":{" +
 		"\"five_hour\":{\"utilization\":10,\"resets_at\":\"2026-09-13T12:00:00Z\"}," +
@@ -120,23 +88,15 @@ func TestClaudeModelWindowSelection(t *testing.T) {
 		"{\"display_name\":\"Opus\",\"utilization\":100,\"resets_at\":\"2026-09-13T12:00:00Z\"}," +
 		"{\"display_name\":\"Sonnet\",\"utilization\":25,\"resets_at\":\"2026-09-13T12:00:00Z\"}," +
 		"{\"display_name\":\"Haiku\",\"utilization\":15,\"resets_at\":\"2026-09-13T12:00:00Z\"}]}}")
-	defaultModel, err := parseClaudeQuota(raw, "", false, now)
-	if err != nil || defaultModel.Eligible || !defaultModel.Known {
-		t.Fatalf("default model ignored an exhausted model window: %#v, %v", defaultModel, err)
-	}
-	sonnet, err := parseClaudeQuota(raw, "claude-sonnet-4-5", true, now)
-	if err != nil || !sonnet.Eligible || sonnet.Headroom != 70 {
-		t.Fatalf("explicit sonnet quota = %#v, %v", sonnet, err)
-	}
-	haiku, err := parseClaudeQuota(raw, "claude-haiku-4-5", true, now)
-	if err != nil || !haiku.Eligible || haiku.Headroom != 85 {
-		t.Fatalf("explicit haiku quota = %#v, %v", haiku, err)
+	allModels, err := parseClaudeQuota(raw, now)
+	if err != nil || allModels.Eligible || !allModels.Known {
+		t.Fatalf("quota ignored an exhausted model window: %#v, %v", allModels, err)
 	}
 
 	ambiguous := json.RawMessage("{\"subscription_type\":\"pro\",\"rate_limits_available\":true,\"rate_limits\":{" +
 		"\"five_hour\":{\"utilization\":10,\"resets_at\":\"2026-09-13T12:00:00Z\"}," +
 		"\"model_scoped\":[{\"display_name\":\"weekly\",\"utilization\":80,\"resets_at\":\"2026-09-13T12:00:00Z\"}]}}")
-	conservative, err := parseClaudeQuota(ambiguous, "sonnet", true, now)
+	conservative, err := parseClaudeQuota(ambiguous, now)
 	if err != nil || !conservative.Eligible || conservative.Headroom != 20 {
 		t.Fatalf("ambiguous model window was ignored: %#v, %v", conservative, err)
 	}
@@ -156,6 +116,42 @@ func TestClaudeControlResponseMatchingAndErrors(t *testing.T) {
 	_, matched, err = decodeClaudeControlFrame(failed, "usage-1")
 	if !matched || err == nil || strings.Contains(err.Error(), "secret-token") {
 		t.Fatalf("error response leaked native details: matched %v, err %v", matched, err)
+	}
+}
+
+func TestClaudeFreshExhaustionSurvivesMalformedSibling(t *testing.T) {
+	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name  string
+		rates string
+	}{
+		{
+			name: "exhausted window before malformed sibling",
+			rates: `{"five_hour":{"utilization":100,"resets_at":"2026-09-13T12:00:00Z"},` +
+				`"seven_day":{"utilization":101,"resets_at":"2026-09-13T12:00:00Z"}}`,
+		},
+		{
+			name: "malformed sibling before exhausted window",
+			rates: `{"five_hour":{"utilization":101,"resets_at":"2026-09-13T12:00:00Z"},` +
+				`"seven_day":{"utilization":100,"resets_at":"2026-09-13T12:00:00Z"}}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			payload := json.RawMessage(`{"subscription_type":"max","rate_limits_available":true,"rate_limits":` + test.rates + `}`)
+			got, err := parseClaudeQuota(payload, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !got.Subscription || !got.Known || got.Eligible || canLaunchExplicit(got) {
+				t.Fatalf("fresh exhaustion was lost beside malformed data: %+v", got)
+			}
+		})
+	}
+
+	staleOnly, err := parseClaudeQuota(json.RawMessage(`{"subscription_type":"max","rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":100,"resets_at":"2026-09-12T11:00:00Z"}}}`), now)
+	if err != nil || !staleOnly.Subscription || staleOnly.Known || staleOnly.Eligible || !canLaunchExplicit(staleOnly) {
+		t.Fatalf("stale-only exhaustion was not kept unknown: %+v, %v", staleOnly, err)
 	}
 }
 
@@ -198,7 +194,7 @@ func TestProbeClaudeHandshakeAndNoUserFrame(t *testing.T) {
 	t.Setenv("PATH", bin)
 	t.Setenv("ANTHROPIC_API_KEY", "synthetic-test-value")
 	account := Account{Provider: "claude", Name: "synthetic", NativeDir: profile}
-	got, err := probeClaude(account, "", false)
+	got, err := probeClaude(account)
 	if err != nil || !got.Eligible || !got.Subscription || got.Headroom != 85 {
 		t.Fatalf("probe result = %#v, err %v", got, err)
 	}
