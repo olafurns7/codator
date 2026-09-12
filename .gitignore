@@ -1,0 +1,7 @@
+/codator
+/*.test
+/.worktrees/
+/.herdr/
+
+# Local research, review reports, and agent handoffs.
+/docs/
