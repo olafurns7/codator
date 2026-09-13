@@ -75,6 +75,11 @@ func login(store *Store, inv invocation) error {
 		return err
 	}
 	defer lock.Close()
+	if inv.provider == "claude" {
+		if err := store.invalidateClaudeCacheOnLogin(account); err != nil {
+			return errors.New("cannot safely invalidate Claude usage state")
+		}
+	}
 	if err := os.Chdir(account.NativeDir); err != nil {
 		return errors.New("cannot enter the isolated native profile")
 	}
@@ -119,7 +124,7 @@ func status(store *Store, out io.Writer, providers ...string) error {
 				fmt.Fprintf(out, "%s %s: unknown (cannot lock profile)\n", provider, account.Name)
 				continue
 			}
-			q, err := probeAccount(signals.ctx, provider, account, "")
+			q, err := probeAccount(signals.ctx, store, provider, account, "")
 			lock.Close()
 			if signalErr := signals.ctx.Err(); signalErr != nil {
 				return signalErr
@@ -195,18 +200,18 @@ func launchExplicit(signals *probeSignalScope, store *Store, path string, inv in
 		return err
 	}
 	defer lock.Close()
-	q, err := probeAccount(signals.ctx, inv.provider, *selected, model)
+	q, err := probeAccount(signals.ctx, store, inv.provider, *selected, model)
 	if signalErr := signals.ctx.Err(); signalErr != nil {
 		return signalErr
 	}
 	if err != nil && !q.Subscription {
-		return errors.New("cannot verify the selected subscription profile")
+		return claudeVerificationError("cannot verify the selected subscription profile", q)
 	}
 	if err != nil && q.Known {
-		return errors.New("cannot verify usage for the selected subscription profile")
+		return claudeVerificationError("cannot verify usage for the selected subscription profile", q)
 	}
 	if !q.Subscription {
-		return errors.New("selected profile is not verified as a subscription account")
+		return claudeVerificationError("selected profile is not verified as a subscription account", q)
 	}
 	if !canLaunchExplicit(q) {
 		return fmt.Errorf("selected account is ineligible: %s", q.Reason)
@@ -240,7 +245,7 @@ func launchBest(signals *probeSignalScope, store *Store, path string, inv invoca
 			skipped = append(skipped, account.Name+": lock failed")
 			continue
 		}
-		q, err := probeAccount(signals.ctx, inv.provider, account, model)
+		q, err := probeAccount(signals.ctx, store, inv.provider, account, model)
 		if signalErr := signals.ctx.Err(); signalErr != nil {
 			lock.Close()
 			closeCandidateLocks(usable)
@@ -292,6 +297,9 @@ func closeCandidateLocks(candidates []lockedCandidate) {
 }
 
 func quotaReason(q quota) string {
+	if claudeRetryHint(q.Reason) != "" {
+		return q.Reason
+	}
 	if q.Reason == "" {
 		return "usage unknown"
 	}
@@ -301,11 +309,22 @@ func quotaReason(q quota) string {
 	return "usage unknown"
 }
 
-func probeAccount(ctx context.Context, provider string, account Account, model claudeModelFamily) (quota, error) {
-	if provider == "codex" {
-		return probeCodexWithContext(ctx, account)
+func claudeVerificationError(message string, q quota) error {
+	if retry := claudeRetryHint(q.Reason); retry != "" {
+		return fmt.Errorf("%s: %s", message, retry)
 	}
-	return probeClaudeWithModelContext(ctx, account, model)
+	return errors.New(message)
+}
+
+func probeAccount(ctx context.Context, store *Store, provider string, account Account, model claudeModelFamily) (quota, error) {
+	switch provider {
+	case "codex":
+		return probeCodexWithContext(ctx, account)
+	case "claude":
+		return store.probeClaudeAccount(ctx, account, model)
+	default:
+		return quota{}, errors.New("unknown usage provider")
+	}
 }
 
 func execSelected(signals *probeSignalScope, lock *AccountLock, path, provider string, nativeArgs []string, account Account, q quota) error {

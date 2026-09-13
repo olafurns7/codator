@@ -86,14 +86,14 @@ func hasAny(value string, parts ...string) bool {
 
 func claudeProbeEnv(nativeDir string) []string {
 	allowed := map[string]bool{"HOME": true, "PATH": true, "LANG": true, "LC_ALL": true, "TMPDIR": true}
-	base := make([]string, 0, len(allowed)+2)
+	base := make([]string, 0, len(allowed)+5)
 	for _, item := range os.Environ() {
 		key, _, ok := cutEnv(item)
 		if ok && allowed[key] {
 			base = append(base, item)
 		}
 	}
-	base = append(base, "DO_NOT_TRACK=1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1")
+	base = append(base, "DO_NOT_TRACK=1", "DISABLE_AUTOUPDATER=1", "DISABLE_ERROR_REPORTING=1", "DISABLE_BUG_COMMAND=1", "DISABLE_TELEMETRY=1")
 	return claudeEnv(nativeDir, base)
 }
 
@@ -171,25 +171,33 @@ func probeClaudeWithContext(parent context.Context, account Account) (quota, err
 }
 
 func probeClaudeWithModelContext(parent context.Context, account Account, model claudeModelFamily) (quota, error) {
+	payload, err := probeClaudePayloadWithContext(parent, account)
+	if err != nil {
+		return quota{}, err
+	}
+	return parseClaudeQuotaForModel(payload, time.Now(), model)
+}
+
+func probeClaudePayloadWithContext(parent context.Context, account Account) (json.RawMessage, error) {
 	if account.Provider != "claude" || account.Err != nil || !filepath.IsAbs(account.NativeDir) {
-		return quota{}, errors.New("Claude account profile is unavailable")
+		return nil, errors.New("Claude account profile is unavailable")
 	}
 	path, err := findNative("claude")
 	if err != nil {
-		return quota{}, err
+		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(parent, claudeProbeTimeout)
 	defer cancel()
 
 	stdinR, stdinW, err := os.Pipe()
 	if err != nil {
-		return quota{}, errors.New("cannot create Claude probe pipes")
+		return nil, errors.New("cannot create Claude probe pipes")
 	}
 	stdoutR, stdoutW, err := os.Pipe()
 	if err != nil {
 		stdinR.Close()
 		stdinW.Close()
-		return quota{}, errors.New("cannot create Claude probe pipes")
+		return nil, errors.New("cannot create Claude probe pipes")
 	}
 	stderrR, stderrW, err := os.Pipe()
 	if err != nil {
@@ -197,7 +205,7 @@ func probeClaudeWithModelContext(parent context.Context, account Account, model 
 		stdinW.Close()
 		stdoutR.Close()
 		stdoutW.Close()
-		return quota{}, errors.New("cannot create Claude probe pipes")
+		return nil, errors.New("cannot create Claude probe pipes")
 	}
 
 	args := []string{"--print", "--input-format", "stream-json", "--output-format", "stream-json",
@@ -212,7 +220,7 @@ func probeClaudeWithModelContext(parent context.Context, account Account, model 
 		stdoutW.Close()
 		stderrR.Close()
 		stderrW.Close()
-		return quota{}, errors.New("cannot start Claude usage probe")
+		return nil, errors.New("cannot start Claude usage probe")
 	}
 	stdinR.Close()
 	stdoutW.Close()
@@ -249,19 +257,19 @@ func probeClaudeWithModelContext(parent context.Context, account Account, model 
 	}()
 
 	if err := writeClaudeControl(stdinW, "init-1", "initialize"); err != nil {
-		return quota{}, err
+		return nil, err
 	}
 	if _, err := awaitClaudeResponse(frames, streamDone, ctx.Done(), "init-1"); err != nil {
-		return quota{}, err
+		return nil, err
 	}
 	if err := writeClaudeControl(stdinW, "usage-1", "get_usage"); err != nil {
-		return quota{}, err
+		return nil, err
 	}
 	payload, err := awaitClaudeResponse(frames, streamDone, ctx.Done(), "usage-1")
 	if err != nil {
-		return quota{}, err
+		return nil, err
 	}
-	return parseClaudeQuotaForModel(payload, time.Now(), model)
+	return payload, nil
 }
 
 type claudeModelFamily string
