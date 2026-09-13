@@ -366,7 +366,9 @@ func TestProbeClaudeHandshakeAndNoUserFrame(t *testing.T) {
 		"case \"$CLAUDE_CONFIG_DIR\" in /*) ;; *) exit 91 ;; esac\n" +
 		"[ \"$PWD\" = \"$CLAUDE_CONFIG_DIR\" ]\n" +
 		"[ -z \"$ANTHROPIC_API_KEY\" ]\n" +
-		"[ \"$DO_NOT_TRACK\" = 1 ] && [ \"$CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC\" = 1 ]\n" +
+		"[ \"$DO_NOT_TRACK\" = 1 ] && [ -z \"$CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC\" ]\n" +
+		"[ \"$DISABLE_AUTOUPDATER\" = 1 ] && [ \"$DISABLE_ERROR_REPORTING\" = 1 ]\n" +
+		"[ \"$DISABLE_BUG_COMMAND\" = 1 ] && [ \"$DISABLE_TELEMETRY\" = 1 ]\n" +
 		"IFS= read -r init\n" +
 		"printf '%s\\n' \"$init\" >> \"$CLAUDE_CONFIG_DIR/frames\"\n" +
 		"case \"$init\" in *'\"subtype\":\"initialize\"'*) ;; *) exit 92 ;; esac\n" +
@@ -385,6 +387,7 @@ func TestProbeClaudeHandshakeAndNoUserFrame(t *testing.T) {
 	}
 	t.Setenv("PATH", bin)
 	t.Setenv("ANTHROPIC_API_KEY", "synthetic-test-value")
+	t.Setenv("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
 	account := Account{Provider: "claude", Name: "synthetic", NativeDir: profile}
 	got, err := probeClaude(account)
 	if err != nil || !got.Eligible || !got.Subscription || got.Headroom != 85 {
