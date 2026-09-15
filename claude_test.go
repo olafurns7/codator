@@ -46,7 +46,7 @@ func TestClaudeEnvStripsInheritedStorageOverridesWithoutProfile(t *testing.T) {
 }
 
 func TestClaudeEnvKeepsAccountsInDistinctConfigAndSecureStorageDirs(t *testing.T) {
-	root := t.TempDir()
+	root := tempDataHome(t)
 	first := filepath.Join(root, "claude", "work", "native")
 	second := filepath.Join(root, "claude", "personal", "native")
 	firstEnv := envMap(claudeEnv(first, []string{"CLAUDE_SECURESTORAGE_CONFIG_DIR=/hostile"}))
@@ -379,7 +379,7 @@ func TestClaudeFreshExhaustionSurvivesMalformedSibling(t *testing.T) {
 }
 
 func TestProbeClaudeHandshakeAndNoUserFrame(t *testing.T) {
-	root := t.TempDir()
+	root := tempDataHome(t)
 	profile, bin := filepath.Join(root, "profile"), filepath.Join(root, "bin")
 	if err := os.Mkdir(profile, 0700); err != nil {
 		t.Fatal(err)

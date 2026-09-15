@@ -60,7 +60,7 @@ func TestLaunchBestSelectsAccountAndPreservesContext(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	root := t.TempDir()
+	root := tempDataHome(t)
 	binDir := filepath.Join(root, "bin")
 	if err := os.Mkdir(binDir, 0700); err != nil {
 		t.Fatal(err)
@@ -180,7 +180,7 @@ func TestCodexConcurrentResumeReleasesOnlySessionLock(t *testing.T) {
 	if _, err := store.EnsureAccount("codex", "work"); err != nil {
 		t.Fatal(err)
 	}
-	root := t.TempDir()
+	root := tempDataHome(t)
 	binDir := filepath.Join(root, "bin")
 	if err := os.Mkdir(binDir, 0700); err != nil {
 		t.Fatal(err)
@@ -266,7 +266,7 @@ func TestCodexCredentialMutationsKeepProfileLock(t *testing.T) {
 			if _, err := store.EnsureAccount("codex", "work"); err != nil {
 				t.Fatal(err)
 			}
-			root := t.TempDir()
+			root := tempDataHome(t)
 			binDir := filepath.Join(root, "bin")
 			if err := os.Mkdir(binDir, 0700); err != nil {
 				t.Fatal(err)
@@ -431,7 +431,7 @@ func TestLaunchPassesNativeArgsOpaque(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			root := t.TempDir()
+			root := tempDataHome(t)
 			binDir := filepath.Join(root, "bin")
 			if err := os.Mkdir(binDir, 0700); err != nil {
 				t.Fatal(err)
@@ -534,7 +534,7 @@ func TestLaunchClaudeSelectsByModelAndPreservesArgs(t *testing.T) {
 		}
 	}
 
-	root := t.TempDir()
+	root := tempDataHome(t)
 	binDir := filepath.Join(root, "bin")
 	if err := os.Mkdir(binDir, 0700); err != nil {
 		t.Fatal(err)

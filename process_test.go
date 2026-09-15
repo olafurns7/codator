@@ -40,7 +40,7 @@ func TestSignalDuringLaunchCancelsProbeGroup(t *testing.T) {
 				}
 			}
 
-			root := t.TempDir()
+			root := tempDataHome(t)
 			binDir, eventDir := filepath.Join(root, "bin"), filepath.Join(root, "events")
 			if err := os.Mkdir(binDir, 0700); err != nil {
 				t.Fatal(err)
@@ -288,7 +288,7 @@ func TestProbeDeadlineKillsShimAndGrandchild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	binDir := t.TempDir()
+	binDir := tempDataHome(t)
 	if err := os.Chmod(binDir, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +403,7 @@ func TestExecNativeKeepsLockAndChildSemantics(t *testing.T) {
 	if _, err := store.EnsureAccount("codex", "exec"); err != nil {
 		t.Fatal(err)
 	}
-	stub := filepath.Join(t.TempDir(), "native-stub")
+	stub := filepath.Join(tempDataHome(t), "native-stub")
 	exitScript := `#!/bin/sh
 printf ready > "$CODATOR_READY_FILE"
 while [ ! -f "$CODATOR_RELEASE_FILE" ]; do :; done
@@ -413,7 +413,7 @@ exit 23
 		t.Fatal(err)
 	}
 	t.Run("exit code and lock lifetime", func(t *testing.T) {
-		ready, release := filepath.Join(t.TempDir(), "ready"), filepath.Join(t.TempDir(), "release")
+		ready, release := filepath.Join(tempDataHome(t), "ready"), filepath.Join(tempDataHome(t), "release")
 		cmd := execNativeChildCommand(t, dataHome, stub, "exit", ready, release)
 		waitForFile(t, ready, cmd)
 		assertExecLockBusy(t, store)
@@ -437,16 +437,16 @@ exec /bin/sleep 30
 		}
 		for _, sig := range []syscall.Signal{syscall.SIGINT, syscall.SIGTERM} {
 			t.Run(sig.String(), func(t *testing.T) {
-				ready, release := filepath.Join(t.TempDir(), "ready"), filepath.Join(t.TempDir(), "unused")
+				ready, release := filepath.Join(tempDataHome(t), "ready"), filepath.Join(tempDataHome(t), "unused")
 				cmd := execNativeChildCommand(t, dataHome, stub, "signal", ready, release)
-				wait := make(chan error, 1)
-				go func() { wait <- cmd.Wait() }()
 				waitForFile(t, ready, cmd)
 				assertExecLockBusy(t, store)
 				time.Sleep(25 * time.Millisecond)
 				if err := cmd.Process.Signal(sig); err != nil {
 					t.Fatal(err)
 				}
+				wait := make(chan error, 1)
+				go func() { wait <- cmd.Wait() }()
 				var err error
 				select {
 				case err = <-wait:
