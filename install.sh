@@ -1,0 +1,100 @@
+#!/bin/sh
+# Install a verified Codator release binary on Linux.
+set -eu
+
+repo=https://github.com/olafurns7/codator
+
+fail() {
+	printf '%s\n' "codator installer: $*" >&2
+	exit 1
+}
+
+shell_quote() {
+	printf "'"
+	printf '%s' "$1" | sed "s/'/'\\\\''/g"
+	printf "'"
+}
+
+for command in awk chmod cp curl mkdir mktemp mv rm sed sha256sum uname; do
+	command -v "$command" >/dev/null 2>&1 || fail "required command not found: $command"
+done
+
+case "$(uname -s)" in
+	Linux) ;;
+	*) fail "unsupported OS: $(uname -s) (Linux only)" ;;
+esac
+
+case "$(uname -m)" in
+	x86_64|amd64) arch=amd64 ;;
+	aarch64|arm64) arch=arm64 ;;
+	*) fail "unsupported architecture: $(uname -m) (supported: x86_64, aarch64)" ;;
+esac
+
+version=${CODATOR_VERSION:-latest}
+case "$version" in
+	latest) download_base=$repo/releases/latest/download ;;
+	v)
+		fail "CODATOR_VERSION must be latest or a v-prefixed release tag"
+		;;
+	v*[!A-Za-z0-9._-]*)
+		fail "CODATOR_VERSION must be latest or a v-prefixed release tag"
+		;;
+	v*) download_base=$repo/releases/download/$version ;;
+	*) fail "CODATOR_VERSION must be latest or a v-prefixed release tag" ;;
+esac
+
+if [ -n "${CODATOR_INSTALL_DIR:-}" ]; then
+	install_dir=$CODATOR_INSTALL_DIR
+elif [ -n "${HOME:-}" ]; then
+	install_dir=$HOME/.local/bin
+else
+	fail "HOME is not set; set CODATOR_INSTALL_DIR"
+fi
+
+asset=codator-linux-$arch
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/codator.XXXXXX") || fail "cannot create temporary directory"
+stage=
+cleanup() {
+	rm -rf "$tmp"
+	if [ -n "$stage" ]; then
+		rm -f "$stage"
+	fi
+}
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
+
+download() {
+	curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --output "$2" "$1"
+}
+
+download "$download_base/SHA256SUMS" "$tmp/SHA256SUMS" || fail "cannot download SHA256SUMS"
+download "$download_base/$asset" "$tmp/$asset" || fail "cannot download $asset"
+
+expected=$(awk -v name="$asset" '
+($2 == name || $2 == "*" name) { count++; value = $1 }
+END { if (count != 1) exit 1; print value }
+' "$tmp/SHA256SUMS") || fail "SHA256SUMS has no unique checksum for $asset"
+case "$expected" in
+	''|*[!0123456789abcdefABCDEF]*) fail "invalid SHA256 checksum for $asset" ;;
+esac
+[ "${#expected}" -eq 64 ] || fail "invalid SHA256 checksum for $asset"
+printf '%s  %s\n' "$expected" "$asset" > "$tmp/checksum"
+(cd "$tmp" && sha256sum -c checksum) || fail "checksum verification failed for $asset"
+
+mkdir -p "$install_dir" || fail "cannot create $install_dir"
+destination=$install_dir/codator
+[ ! -d "$destination" ] || fail "$destination is a directory"
+stage=$(mktemp "$install_dir/.codator.XXXXXX") || fail "cannot stage installation in $install_dir"
+cp "$tmp/$asset" "$stage" || fail "cannot stage $asset"
+chmod 0755 "$stage" || fail "cannot mark Codator executable"
+mv -f "$stage" "$destination" || fail "cannot install Codator"
+stage=
+
+printf 'Installed Codator at %s\n' "$destination"
+case ":${PATH:-}:" in
+	*":$install_dir:"*) ;;
+	*)
+		printf 'Add this to your shell profile, then open a new shell:\n'
+		printf '  export PATH=%s:"$PATH"\n' "$(shell_quote "$install_dir")"
+		;;
+esac

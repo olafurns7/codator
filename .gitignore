@@ -1,4 +1,5 @@
 /codator
+/dist/
 /*.test
 /.worktrees/
 /.herdr/

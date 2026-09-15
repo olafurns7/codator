@@ -139,6 +139,209 @@ func TestClaudeLegacyProjectedDenialsUseCanonicalLabels(t *testing.T) {
 	}
 }
 
+func TestClaudeStatusBreakdownFromSanitizedCache(t *testing.T) {
+	now := time.Now().UTC()
+	future := now.Add(24 * time.Hour)
+	past := now.Add(-time.Hour)
+	window := func(utilization string, reset time.Time) string {
+		return fmt.Sprintf(`{"utilization":%s,"resets_at":%q}`, utilization, reset.Format(time.RFC3339Nano))
+	}
+	modelWindow := func(name, utilization string, reset time.Time) string {
+		return fmt.Sprintf(`{"display_name":%q,"utilization":%s,"resets_at":%q}`, name, utilization, reset.Format(time.RFC3339Nano))
+	}
+	payload := func(rates string) json.RawMessage {
+		return json.RawMessage(`{"subscription_type":"max","rate_limits_available":true,"rate_limits":{` + rates + `}}`)
+	}
+	screenshot := payload(fmt.Sprintf(`"five_hour":%s,"seven_day":%s,"seven_day_oauth_apps":%s,`+
+		`"seven_day_opus":%s,"seven_day_sonnet":%s,"model_scoped":[%s,%s,%s,%s,%s]`,
+		window("5", future), window("31", future), window("22", future), window("24", future), window("40", future),
+		modelWindow("Fable", "58", future), modelWindow("Sonnet", "44", future),
+		modelWindow("Haiku", "12", future), modelWindow("Future", "75", future), modelWindow("Opus", "54", future)))
+	modelOnlyExhaustion := payload(fmt.Sprintf(`"five_hour":%s,"seven_day":%s,"model_scoped":[%s]`,
+		window("18", future), window("92", future), modelWindow("Fable", "100", future)))
+	sharedExhaustion := payload(fmt.Sprintf(`"five_hour":%s,"seven_day":%s,"model_scoped":[%s]`,
+		window("20", future), window("100", future), modelWindow("Fable", "25", future)))
+	missingShared := payload(fmt.Sprintf(`"five_hour":%s,"model_scoped":[%s]`,
+		window("5", future), modelWindow("Fable", "58", future)))
+	malformedFable := payload(fmt.Sprintf(`"five_hour":%s,"seven_day":%s,"model_scoped":[%s]`,
+		window("5", future), window("31", future), modelWindow("Fable", `"bad"`, future)))
+	expiredSession := payload(fmt.Sprintf(`"five_hour":%s,"seven_day":%s,"model_scoped":[%s]`,
+		window("10", past), window("31", future), modelWindow("Fable", "58", future)))
+	staleFable := payload(fmt.Sprintf(`"five_hour":%s,"seven_day":%s,"model_scoped":[%s]`,
+		window("5", future), window("92", future), modelWindow("Fable", "100", future)))
+	failedRefresh := payload(fmt.Sprintf(`"five_hour":%s,"seven_day":%s,"seven_day_oauth_apps":%s,`+
+		`"seven_day_opus":%s,"seven_day_sonnet":%s,"model_scoped":[%s,%s,%s,%s]`,
+		window("5", future), window("92", future), window("20", future), window("24", future), window("40", future),
+		modelWindow("Fable", "100", future), modelWindow("Sonnet", "44", future),
+		modelWindow("Haiku", "12", future), modelWindow("Opus", "24", future)))
+
+	tests := []struct {
+		name             string
+		payload          json.RawMessage
+		want             []string
+		wantNot          []string
+		probeCounts      []int
+		retainedDenial   bool
+		staleReservation bool
+		failedRefresh    bool
+		probeFails       bool
+	}{
+		{
+			name:    "screenshot values on fresh probe and cache reuse",
+			payload: screenshot,
+			want: []string{
+				"claude work: last observed at ",
+				"\n  Current session: 95.0% remaining",
+				"\n  Weekly (all models): 69.0% remaining",
+				"\n  Weekly (Fable): 42.0% remaining",
+				"Weekly (OAuth apps): 78.0% remaining",
+				"Weekly (Opus #1): 76.0% remaining",
+				"Weekly (Opus #2): 46.0% remaining",
+				"Weekly (Sonnet #1): 60.0% remaining",
+				"Weekly (Sonnet #2): 56.0% remaining",
+				"Weekly (other reported model 1): 25.0% remaining",
+			},
+			wantNot:     []string{"ineligible", "all applicable usage headroom is exhausted"},
+			probeCounts: []int{1, 1},
+		},
+		{
+			name:        "model-only exhaustion preserves shared headroom",
+			payload:     modelOnlyExhaustion,
+			want:        []string{"Weekly (all models): 8.0% remaining", "Weekly (Fable): 0.0% remaining (exhausted)"},
+			wantNot:     []string{"ineligible", "all applicable usage headroom is exhausted"},
+			probeCounts: []int{1},
+		},
+		{
+			name:        "shared exhaustion remains distinct from Fable",
+			payload:     sharedExhaustion,
+			want:        []string{"Weekly (all models): 0.0% remaining (exhausted)", "Weekly (Fable): 75.0% remaining"},
+			probeCounts: []int{1},
+		},
+		{
+			name:        "missing shared weekly bucket is unavailable",
+			payload:     missingShared,
+			want:        []string{"Weekly (all models): unavailable (not reported)", "Weekly (Fable): 42.0% remaining"},
+			wantNot:     []string{"Weekly (all models): 100.0% remaining"},
+			probeCounts: []int{1},
+		},
+		{
+			name:           "fresh partial snapshot retains scoped exhaustion",
+			payload:        malformedFable,
+			retainedDenial: true,
+			want:           []string{"Weekly (all models): 69.0% remaining", "Weekly (Fable): unavailable (malformed utilization)", "known exhausted: Weekly (Fable)"},
+			wantNot:        []string{"Weekly (Fable): 0.0% remaining"},
+			probeCounts:    []int{1},
+		},
+		{
+			name:        "expired window is unavailable",
+			payload:     expiredSession,
+			want:        []string{"Current session: unavailable (window expired)", "Weekly (all models): 69.0% remaining"},
+			probeCounts: []int{1},
+		},
+		{
+			name:             "stale reserved snapshot keeps scoped denial and cooldown",
+			payload:          staleFable,
+			staleReservation: true,
+			want:             []string{"usage unavailable (probe reservation is unresolved; last observed at ", "known exhausted: Weekly (Fable)", "probe cooldown until "},
+			wantNot:          []string{"Current session: 95.0% remaining", "Weekly (all models): 8.0% remaining", "Weekly (Fable): 0.0% remaining"},
+			probeCounts:      []int{0},
+		},
+		{
+			name:          "failed refresh does not revive stale percentages",
+			payload:       failedRefresh,
+			failedRefresh: true,
+			probeFails:    true,
+			want:          []string{"usage unavailable (probe reservation is unresolved; last observed at ", "known exhausted: Weekly (Fable)", "probe cooldown until "},
+			wantNot:       []string{"Weekly (all models): 8.0% remaining", "Weekly (Fable): 0.0% remaining"},
+			probeCounts:   []int{1},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dataHome, _, binDir, account := newFakeClaudeProfile(t)
+			store, err := newStore(dataHome)
+			if err != nil {
+				t.Fatal(err)
+			}
+			installFakeClaude(t, binDir, test.payload, test.probeFails, 0, false)
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+"/usr/bin:/bin")
+
+			if test.staleReservation || test.failedRefresh {
+				observedAt := now.Add(-claudeSuccessCooldown - time.Minute)
+				snapshot, subscription, models, usable, denials, err := sanitizeClaudeQuotaPayload(test.payload, observedAt)
+				if err != nil || !subscription || !usable {
+					t.Fatalf("stale fixture usable=%t subscription=%t err=%v", usable, subscription, err)
+				}
+				attemptedAt, outcome, interval, allowance := now.Add(-time.Minute), "reserved", claudeFailureCooldown, uint8(0)
+				if test.failedRefresh {
+					attemptedAt, outcome, interval, allowance = now.Add(-10*time.Minute), "usable", claudeSuccessCooldown, models
+				}
+				state := claudeProbeCache{
+					Version:           claudeCacheVersion,
+					AttemptedAt:       attemptedAt,
+					NextProbeAt:       attemptedAt.Add(interval),
+					Outcome:           outcome,
+					ObservedAt:        observedAt,
+					Subscription:      subscription,
+					SubscriptionUntil: attemptedAt.Add(interval),
+					AllowanceModels:   allowance,
+					Denials:           denials,
+					Snapshot:          snapshot,
+				}
+				if err := store.writeClaudeProbeCache(account, state); err != nil {
+					t.Fatalf("seed stale snapshot: %v", err)
+				}
+			}
+			if test.retainedDenial {
+				observedAt := now.Add(-9 * time.Minute)
+				snapshot, subscription, models, usable, denials, err := sanitizeClaudeQuotaPayload(staleFable, observedAt)
+				if err != nil || !subscription || !usable || len(denials) != 1 || denials[0].DisplayName != "Fable" {
+					t.Fatalf("prior denial fixture usable=%t subscription=%t denials=%#v err=%v", usable, subscription, denials, err)
+				}
+				attemptedAt := now.Add(-10 * time.Minute)
+				state := claudeProbeCache{
+					Version:           claudeCacheVersion,
+					AttemptedAt:       attemptedAt,
+					NextProbeAt:       attemptedAt.Add(claudeSuccessCooldown),
+					Outcome:           "usable",
+					ObservedAt:        observedAt,
+					Subscription:      subscription,
+					SubscriptionUntil: attemptedAt.Add(claudeSuccessCooldown),
+					AllowanceModels:   models,
+					Denials:           denials,
+					Snapshot:          snapshot,
+				}
+				if err := store.writeClaudeProbeCache(account, state); err != nil {
+					t.Fatalf("seed prior denial: %v", err)
+				}
+			}
+
+			runs := len(test.probeCounts)
+			for i := 0; i < runs; i++ {
+				var out bytes.Buffer
+				if err := status(store, &out, "claude"); err != nil {
+					t.Fatalf("status run %d: %v", i+1, err)
+				}
+				got := out.String()
+				for _, want := range test.want {
+					if !strings.Contains(got, want) {
+						t.Errorf("run %d output %q does not contain %q", i+1, got, want)
+					}
+				}
+				for _, unwanted := range test.wantNot {
+					if strings.Contains(got, unwanted) {
+						t.Errorf("run %d output %q unexpectedly contains %q", i+1, got, unwanted)
+					}
+				}
+				if count := fakeClaudeCount(t, account, ".probe-count"); count != test.probeCounts[i] {
+					t.Errorf("run %d provider probe count=%d, want %d", i+1, count, test.probeCounts[i])
+				}
+			}
+		})
+	}
+}
+
 func TestClaudeCombinedWindowLimitIsCanonicalAndPersistable(t *testing.T) {
 	dataHome, _, binDir, account := newFakeClaudeProfile(t)
 	store, err := newStore(dataHome)
@@ -193,7 +396,7 @@ func TestClaudeCacheReusedAcrossWrapperProcesses(t *testing.T) {
 			installFakeClaude(t, binDir, fullClaudeUsagePayload(time.Now().UTC().Add(24*time.Hour), 10), false, 0, false)
 
 			code, stdout, stderr := runCodatorProcess(t, home, dataHome, binDir, []string{"status", "claude"})
-			if code != 0 || !strings.Contains(stdout, "percentage headroom") {
+			if code != 0 || !strings.Contains(stdout, "Current session:") || !strings.Contains(stdout, "Weekly (all models):") || !strings.Contains(stdout, "Weekly (Fable):") {
 				t.Fatalf("status code=%d stdout=%q stderr=%q", code, stdout, stderr)
 			}
 			if got := fakeClaudeCount(t, account, ".probe-count"); got != 1 {
@@ -364,7 +567,7 @@ func TestClaudeCrashReservationSuppressesAndShowsRetryDeadline(t *testing.T) {
 	installFakeClaude(t, binDir, fullClaudeUsagePayload(time.Now().UTC().Add(24*time.Hour), 10), false, 0, false)
 
 	code, stdout, stderr := runCodatorProcess(t, home, dataHome, binDir, []string{"status", "claude"})
-	if code != 0 || !strings.Contains(stdout, claudeRetryPrefix) {
+	if code != 0 || !strings.Contains(stdout, "usage unavailable (probe reservation is unresolved)") || !strings.Contains(stdout, "probe cooldown until") {
 		t.Fatalf("reserved status code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	for _, args := range [][]string{
