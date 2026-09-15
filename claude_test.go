@@ -13,12 +13,15 @@ import (
 func TestClaudeEnvSanitizesInheritedAuth(t *testing.T) {
 	env := envMap(claudeEnv("profiles/work", []string{
 		"PATH=/usr/bin", "TERM=xterm", "GITHUB_TOKEN=keep",
-		"CLAUDE_CONFIG_DIR=/tmp/other", "ANTHROPIC_API_KEY=fake",
+		"CLAUDE_CONFIG_DIR=/tmp/other", "CLAUDE_SECURESTORAGE_CONFIG_DIR=/tmp/other", "ANTHROPIC_API_KEY=fake",
 		"ANTHROPIC_VENDOR_API_KEY=fake", "CLAUDE_CODE_FUTURE_OAUTH_TOKEN=fake",
 		"CLAUDE_CODE_USE_FOUNDRY=1", "AWS_SECRET_ACCESS_KEY=fake",
 	}))
 	if !filepath.IsAbs(env["CLAUDE_CONFIG_DIR"]) || env["CLAUDE_CONFIG_DIR"] == "/tmp/other" {
 		t.Fatalf("config dir was not forced absolute: %q", env["CLAUDE_CONFIG_DIR"])
+	}
+	if env["CLAUDE_SECURESTORAGE_CONFIG_DIR"] != env["CLAUDE_CONFIG_DIR"] {
+		t.Fatalf("secure storage dir = %q, want config dir %q", env["CLAUDE_SECURESTORAGE_CONFIG_DIR"], env["CLAUDE_CONFIG_DIR"])
 	}
 	for _, key := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_VENDOR_API_KEY", "CLAUDE_CODE_FUTURE_OAUTH_TOKEN", "CLAUDE_CODE_USE_FOUNDRY", "AWS_SECRET_ACCESS_KEY"} {
 		if _, ok := env[key]; ok {
@@ -27,6 +30,34 @@ func TestClaudeEnvSanitizesInheritedAuth(t *testing.T) {
 	}
 	if env["PATH"] != "/usr/bin" || env["TERM"] != "xterm" || env["GITHUB_TOKEN"] != "keep" {
 		t.Fatalf("ordinary environment was not preserved: %#v", env)
+	}
+}
+
+func TestClaudeEnvStripsInheritedStorageOverridesWithoutProfile(t *testing.T) {
+	env := envMap(claudeEnv("", []string{
+		"CLAUDE_CONFIG_DIR=/tmp/other", "CLAUDE_SECURESTORAGE_CONFIG_DIR=/tmp/other",
+		"CLAUDE_SECURESTORAGE_CONFIG_DIR=",
+	}))
+	for _, key := range []string{"CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"} {
+		if _, ok := env[key]; ok {
+			t.Fatalf("inherited %s survived without a profile: %#v", key, env)
+		}
+	}
+}
+
+func TestClaudeEnvKeepsAccountsInDistinctConfigAndSecureStorageDirs(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "claude", "work", "native")
+	second := filepath.Join(root, "claude", "personal", "native")
+	firstEnv := envMap(claudeEnv(first, []string{"CLAUDE_SECURESTORAGE_CONFIG_DIR=/hostile"}))
+	secondEnv := envMap(claudeEnv(second, []string{"CLAUDE_SECURESTORAGE_CONFIG_DIR="}))
+	for _, env := range []map[string]string{firstEnv, secondEnv} {
+		if env["CLAUDE_CONFIG_DIR"] == "" || env["CLAUDE_CONFIG_DIR"] != env["CLAUDE_SECURESTORAGE_CONFIG_DIR"] {
+			t.Fatalf("profile was not pinned to one storage directory: %#v", env)
+		}
+	}
+	if firstEnv["CLAUDE_CONFIG_DIR"] == secondEnv["CLAUDE_CONFIG_DIR"] {
+		t.Fatalf("distinct accounts share a storage directory: first=%q second=%q", firstEnv["CLAUDE_CONFIG_DIR"], secondEnv["CLAUDE_CONFIG_DIR"])
 	}
 }
 
@@ -414,10 +445,16 @@ func TestProbeClaudeHandshakeAndNoUserFrame(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(3 * time.Second)
-	running := processRunning(pid)
+	running, runningErr := processRunning(pid)
+	if runningErr != nil {
+		t.Fatal(runningErr)
+	}
 	for running && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
-		running = processRunning(pid)
+		running, runningErr = processRunning(pid)
+		if runningErr != nil {
+			t.Fatal(runningErr)
+		}
 	}
 	if running {
 		t.Fatalf("Claude probe descendant %d survived cleanup", pid)

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install a verified Codator release binary on Linux.
+# Install a verified Codator release binary on Linux or macOS.
 set -eu
 
 repo=https://github.com/olafurns7/codator
@@ -15,13 +15,22 @@ shell_quote() {
 	printf "'"
 }
 
-for command in awk chmod cp curl mkdir mktemp mv rm sed sha256sum uname; do
+for command in awk chmod cp curl mkdir mktemp mv rm sed uname; do
 	command -v "$command" >/dev/null 2>&1 || fail "required command not found: $command"
 done
 
+if command -v sha256sum >/dev/null 2>&1; then
+	checksum_tool=sha256sum
+elif command -v shasum >/dev/null 2>&1; then
+	checksum_tool=shasum
+else
+	fail "required command not found: sha256sum or shasum"
+fi
+
 case "$(uname -s)" in
-	Linux) ;;
-	*) fail "unsupported OS: $(uname -s) (Linux only)" ;;
+	Linux) platform=linux ;;
+	Darwin) platform=darwin ;;
+	*) fail "unsupported OS: $(uname -s) (supported: Linux, Darwin)" ;;
 esac
 
 case "$(uname -m)" in
@@ -51,7 +60,7 @@ else
 	fail "HOME is not set; set CODATOR_INSTALL_DIR"
 fi
 
-asset=codator-linux-$arch
+asset=codator-$platform-$arch
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/codator.XXXXXX") || fail "cannot create temporary directory"
 stage=
 cleanup() {
@@ -79,7 +88,10 @@ case "$expected" in
 esac
 [ "${#expected}" -eq 64 ] || fail "invalid SHA256 checksum for $asset"
 printf '%s  %s\n' "$expected" "$asset" > "$tmp/checksum"
-(cd "$tmp" && sha256sum -c checksum) || fail "checksum verification failed for $asset"
+case "$checksum_tool" in
+	sha256sum) (cd "$tmp" && sha256sum -c checksum) || fail "checksum verification failed for $asset" ;;
+	shasum) (cd "$tmp" && shasum -a 256 -c checksum) || fail "checksum verification failed for $asset" ;;
+esac
 
 mkdir -p "$install_dir" || fail "cannot create $install_dir"
 destination=$install_dir/codator

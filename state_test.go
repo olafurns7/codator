@@ -77,9 +77,47 @@ func TestAccountLockIsNonblocking(t *testing.T) {
 	}
 }
 
+func TestAccountLabelsRequireExactFilesystemSpelling(t *testing.T) {
+	store, err := newStore(tempDataHome(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lower, err := store.EnsureAccount("claude", "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	upper, err := store.EnsureAccount("claude", "Work")
+	lowerDir, statErr := os.Stat(filepath.Dir(lower.NativeDir))
+	if statErr != nil {
+		t.Fatal(statErr)
+	}
+	upperDir, upperStatErr := os.Stat(filepath.Join(store.root, "claude", "Work"))
+	caseInsensitive := upperStatErr == nil && os.SameFile(lowerDir, upperDir)
+	if caseInsensitive {
+		if err == nil {
+			t.Fatal("case-only label reopened an existing account directory")
+		}
+		return
+	}
+	if upperStatErr != nil {
+		t.Fatal(upperStatErr)
+	}
+	if err != nil {
+		t.Fatalf("case-sensitive filesystem rejected distinct labels: %v", err)
+	}
+	if os.SameFile(lowerDir, upperDir) || lower.NativeDir == upper.NativeDir {
+		t.Fatalf("distinct labels share a native profile: lower=%q upper=%q", lower.NativeDir, upper.NativeDir)
+	}
+}
+
 func tempDataHome(t *testing.T) string {
 	t.Helper()
 	path := t.TempDir()
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path = canonical
 	if err := os.Chmod(path, 0700); err != nil {
 		t.Fatal(err)
 	}

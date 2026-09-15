@@ -11,7 +11,6 @@ import (
 	"math"
 	"os"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -479,15 +478,14 @@ func replaceClaudeCacheFile(dir *os.Root, data []byte) error {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
+	if err := dir.Rename(claudeCacheTemp, claudeCacheName); err != nil {
+		return err
+	}
+	created = false
 	directory, err := dir.Open(".")
 	if err != nil {
 		return err
 	}
-	if err := syscall.Renameat(int(directory.Fd()), claudeCacheTemp, int(directory.Fd()), claudeCacheName); err != nil {
-		directory.Close()
-		return err
-	}
-	created = false
 	syncErr := directory.Sync()
 	closeErr := directory.Close()
 	if syncErr != nil {

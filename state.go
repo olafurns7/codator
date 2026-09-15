@@ -146,11 +146,40 @@ func (s *Store) accountRoot(provider, name string, create bool) (*os.Root, error
 		return nil, fmt.Errorf("open provider directory: %w", err)
 	}
 	account, err := openSubRoot(providerRoot, name, create)
+	if err == nil {
+		err = requireExactDirEntry(providerRoot, name)
+	}
 	providerRoot.Close()
 	if err != nil {
+		if account != nil {
+			account.Close()
+		}
 		return nil, fmt.Errorf("open account directory: %w", err)
 	}
 	return account, nil
+}
+
+// requireExactDirEntry prevents a case-only account label from reopening a
+// different stored profile on a case-insensitive filesystem.
+func requireExactDirEntry(parent *os.Root, name string) error {
+	dir, err := parent.Open(".")
+	if err != nil {
+		return err
+	}
+	entries, err := dir.ReadDir(-1)
+	closeErr := dir.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	for _, entry := range entries {
+		if entry.Name() == name {
+			return nil
+		}
+	}
+	return fmt.Errorf("account label %q does not match the stored directory name", name)
 }
 
 func (s *Store) providerRoot(provider string, create bool) (*os.Root, error) {

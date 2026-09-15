@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,8 @@ import (
 	"testing"
 	"time"
 )
+
+var systemPS, systemPSErr = exec.LookPath("ps")
 
 func TestCodatorSignalChild(t *testing.T) {
 	if os.Getenv("CODATOR_SIGNAL_CHILD") == "1" {
@@ -149,9 +152,9 @@ esac
 				t.Fatalf("probe is outside its own process group: pid=%d pgid=%d", probePID, probeGroup)
 			}
 			for _, pid := range []int{probePID, childPID} {
-				pgid, err := syscall.Getpgid(pid)
-				if err != nil || pgid != probeGroup {
-					t.Fatalf("fake probe process %d pgid=%d err=%v, want %d", pid, pgid, err, probeGroup)
+				process, found, err := psProcess(pid)
+				if err != nil || !found || !processLive(process) || process.pgid != probeGroup {
+					t.Fatalf("fake probe process %d = %#v found=%t err=%v, want live pgid %d", pid, process, found, err, probeGroup)
 				}
 			}
 			if err := cmd.Process.Signal(test.sig); err != nil {
@@ -168,11 +171,16 @@ esac
 			}
 
 			groupDeadline := time.Now().Add(3 * time.Second)
-			for len(liveProcessGroupMembers(probeGroup)) != 0 && time.Now().Before(groupDeadline) {
+			members, membersErr := liveProcessGroupMembers(probeGroup)
+			for membersErr == nil && len(members) != 0 && time.Now().Before(groupDeadline) {
 				time.Sleep(10 * time.Millisecond)
+				members, membersErr = liveProcessGroupMembers(probeGroup)
 			}
-			if alive := liveProcessGroupMembers(probeGroup); len(alive) != 0 {
-				t.Fatalf("%s left probe process-group members alive: %v", test.name, alive)
+			if membersErr != nil {
+				t.Fatalf("%s could not inspect probe process group: %v", test.name, membersErr)
+			}
+			if len(members) != 0 {
+				t.Fatalf("%s left probe process-group members alive: %v", test.name, members)
 			}
 			if lock, err := store.Lock("codex", "a-blocked"); err != nil {
 				t.Fatalf("%s did not release profile lock: %v", test.name, err)
@@ -190,34 +198,84 @@ esac
 	}
 }
 
-func liveProcessGroupMembers(pgid int) []int {
-	entries, err := os.ReadDir("/proc")
+type psProcessState struct {
+	pid   int
+	pgid  int
+	state string
+}
+
+func liveProcessGroupMembers(pgid int) ([]int, error) {
+	processes, err := psProcesses("-ax")
 	if err != nil {
-		return []int{-1}
+		return nil, err
 	}
 	var members []int
-	for _, entry := range entries {
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil {
-			continue
-		}
-		stat, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "stat"))
-		if err != nil {
-			continue
-		}
-		end := strings.LastIndexByte(string(stat), ')')
-		if end < 0 {
-			continue
-		}
-		fields := strings.Fields(string(stat[end+1:]))
-		if len(fields) >= 3 && fields[0] != "Z" && fields[0] != "X" {
-			group, err := strconv.Atoi(fields[2])
-			if err == nil && group == pgid {
-				members = append(members, pid)
-			}
+	for _, process := range processes {
+		if process.pgid == pgid && processLive(process) {
+			members = append(members, process.pid)
 		}
 	}
-	return members
+	return members, nil
+}
+
+func psProcess(pid int) (psProcessState, bool, error) {
+	if systemPSErr != nil {
+		return psProcessState{}, false, systemPSErr
+	}
+	output, err := exec.Command(systemPS, "-p", strconv.Itoa(pid), "-o", "pid=", "-o", "pgid=", "-o", "stat=").Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return psProcessState{}, false, nil
+		}
+		return psProcessState{}, false, err
+	}
+	processes, err := parsePSProcesses(output)
+	if err != nil {
+		return psProcessState{}, false, err
+	}
+	for _, process := range processes {
+		if process.pid == pid {
+			return process, true, nil
+		}
+	}
+	return psProcessState{}, false, nil
+}
+
+func psProcesses(args ...string) ([]psProcessState, error) {
+	if systemPSErr != nil {
+		return nil, systemPSErr
+	}
+	args = append(args, "-o", "pid=", "-o", "pgid=", "-o", "stat=")
+	output, err := exec.Command(systemPS, args...).Output()
+	if err != nil {
+		return nil, err
+	}
+	return parsePSProcesses(output)
+}
+
+func parsePSProcesses(output []byte) ([]psProcessState, error) {
+	var processes []psProcessState
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if len(fields) != 3 {
+			return nil, fmt.Errorf("unexpected ps output %q", line)
+		}
+		pid, pidErr := strconv.Atoi(fields[0])
+		pgid, pgidErr := strconv.Atoi(fields[1])
+		if pidErr != nil || pgidErr != nil {
+			return nil, fmt.Errorf("unexpected ps output %q", line)
+		}
+		processes = append(processes, psProcessState{pid: pid, pgid: pgid, state: fields[2]})
+	}
+	return processes, nil
+}
+
+func processLive(process psProcessState) bool {
+	return process.state != "" && process.state[0] != 'Z' && process.state[0] != 'X'
 }
 
 func TestProbeDeadlineKillsShimAndGrandchild(t *testing.T) {
@@ -292,30 +350,28 @@ wait
 	if err != nil {
 		t.Fatalf("invalid grandchild PID: %q", pidBytes)
 	}
-	running := processRunning(pid)
+	running, runningErr := processRunning(pid)
+	if runningErr != nil {
+		t.Fatal(runningErr)
+	}
 	for running && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
-		running = processRunning(pid)
+		running, runningErr = processRunning(pid)
+		if runningErr != nil {
+			t.Fatal(runningErr)
+		}
 	}
 	if running {
 		t.Fatalf("probe grandchild %d is still running after cancellation", pid)
 	}
 }
 
-func processRunning(pid int) bool {
-	if err := syscall.Kill(pid, 0); err != nil && !errors.Is(err, syscall.EPERM) {
-		return false
+func processRunning(pid int) (bool, error) {
+	process, found, err := psProcess(pid)
+	if err != nil || !found {
+		return false, err
 	}
-	stat, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
-	if err != nil {
-		return !errors.Is(err, os.ErrNotExist)
-	}
-	end := strings.LastIndexByte(string(stat), ')')
-	if end < 0 {
-		return true
-	}
-	fields := strings.Fields(string(stat[end+1:]))
-	return len(fields) == 0 || fields[0] != "Z" && fields[0] != "X"
+	return processLive(process), nil
 }
 
 func TestExecNativeChild(t *testing.T) {
