@@ -9,6 +9,7 @@ import (
 const usage = `Usage:
   codator login codex NAME [-- native-login-options]
   codator login claude NAME [-- native-login-options]
+  codator doctor [codex|claude]
   codator status [codex|claude]
   codator codex [--account NAME] [native arguments]
   codator claude [--account NAME] [native arguments]
@@ -19,6 +20,7 @@ remaining argument, including --, is passed unchanged to the native CLI.
 
 Examples:
   codator login codex personal
+  codator doctor codex
   codator status
   codator claude --account work --model sonnet`
 
@@ -55,6 +57,14 @@ func parseInvocation(args []string) (invocation, error) {
 			return invocation{verb: "status", provider: args[1]}, nil
 		}
 		return invocation{}, fmt.Errorf("%w: status accepts only codex or claude", errUsage)
+	case "doctor":
+		if len(args) == 1 {
+			return invocation{verb: "doctor"}, nil
+		}
+		if len(args) == 2 && validProvider(args[1]) {
+			return invocation{verb: "doctor", provider: args[1]}, nil
+		}
+		return invocation{}, fmt.Errorf("%w: doctor accepts only codex or claude", errUsage)
 	case "codex", "claude":
 		account, nativeArgs, err := parseLaunchArgs(args[1:])
 		if err != nil {

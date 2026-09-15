@@ -14,6 +14,13 @@ func execute(inv invocation) (int, error) {
 	if inv.verb == "launch" && nativeInfoArgs(inv.provider, inv.args) {
 		return 0, nativeInfo(inv)
 	}
+	if inv.verb == "doctor" {
+		providers := []string{inv.provider}
+		if inv.provider == "" {
+			providers = []string{"codex", "claude"}
+		}
+		return doctor(os.Stdout, providers...)
+	}
 	store, err := storeFromEnv()
 	if err != nil {
 		return 1, err
@@ -227,7 +234,7 @@ func launchExplicit(signals *probeSignalScope, store *Store, path string, inv in
 	if !canLaunchExplicit(q) {
 		return fmt.Errorf("selected account is ineligible: %s", q.Reason)
 	}
-	return execSelected(signals, lock, path, inv.provider, inv.args, *selected, q)
+	return execSelected(signals, store, lock, path, inv.provider, inv.args, *selected, q)
 }
 
 type lockedCandidate struct {
@@ -298,7 +305,7 @@ func launchBest(signals *probeSignalScope, store *Store, path string, inv invoca
 		}
 	}
 	defer winnerLock.Close()
-	return execSelected(signals, winnerLock, path, inv.provider, inv.args, winner.Account, winner.Quota)
+	return execSelected(signals, store, winnerLock, path, inv.provider, inv.args, winner.Account, winner.Quota)
 }
 
 func closeCandidateLocks(candidates []lockedCandidate) {
@@ -338,7 +345,15 @@ func probeAccount(ctx context.Context, store *Store, provider string, account Ac
 	}
 }
 
-func execSelected(signals *probeSignalScope, lock *AccountLock, path, provider string, nativeArgs []string, account Account, q quota) error {
+func execSelected(signals *probeSignalScope, store *Store, lock *AccountLock, path, provider string, nativeArgs []string, account Account, q quota) error {
+	if provider == "claude" {
+		if err := recoverClaudeSetup(signals.ctx, store, account); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			fmt.Fprintf(os.Stderr, "codator: Claude setup recovery skipped: %v\n", err)
+		}
+		if err := signals.ctx.Err(); err != nil {
+			return err
+		}
+	}
 	if signals.stopListening() {
 		return context.Canceled
 	}

@@ -103,6 +103,19 @@ mv -f "$stage" "$destination" || fail "cannot install Codator"
 stage=
 
 printf 'Installed Codator at %s\n' "$destination"
+native_found=false
+for native in codex claude; do
+	if command -v "$native" >/dev/null 2>&1; then
+		native_found=true
+		printf 'Checking %s prerequisites:\n' "$native"
+		if ! "$destination" doctor "$native"; then
+			printf 'Codator is installed, but %s prerequisites need attention. Fix the doctor result, then run codator doctor %s again.\n' "$native" "$native" >&2
+		fi
+	fi
+done
+if [ "$native_found" = false ]; then
+	printf 'Codator is installed. Install the Codex or Claude native CLI: https://github.com/olafurns7/codator#requirements, then run codator doctor.\n'
+fi
 case ":${PATH:-}:" in
 	*":$install_dir:"*) ;;
 	*)

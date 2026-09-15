@@ -34,25 +34,56 @@ To choose a directory or pin a release:
 
 ~~~sh
 curl -fsSL https://raw.githubusercontent.com/olafurns7/codator/main/install.sh | CODATOR_INSTALL_DIR="$HOME/bin" sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/codator/main/install.sh | CODATOR_VERSION=v0.2.0 sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/codator/main/install.sh | CODATOR_VERSION=v0.3.0 sh
 ~~~
+
+After a verified install, the installer runs `codator doctor` for each native CLI it finds. A missing optional provider does not block installation. If a prerequisite needs attention, the binary is still installed and the installer prints the doctor result; fix it before that provider is launched. If neither native CLI is installed, it prints the native-install and doctor next step. The installer never uses `sudo` or changes shell, security, or profile settings.
+
+For Codex on Linux, install the distribution `bubblewrap` package so `bwrap` is on PATH. After Codator is installed, check the native CLI you plan to use before login or launch:
+
+~~~sh
+codator doctor codex
+# or, for a Claude-only installation
+codator doctor claude
+~~~
+
+`doctor` is read-only: it does not access accounts, usage, credentials, or profiles. It checks only the selected native CLI. On Linux, the Codex check also runs a short harmless `bwrap` user-and-network namespace command. On macOS, Codex uses Seatbelt and does not need `bwrap`.
+
+If Ubuntu 24.04 still reports a blocked namespace after `bubblewrap` is installed, use the supported AppArmor profile procedure from the [Codex sandbox prerequisites](https://learn.chatgpt.com/docs/sandboxing#prerequisites):
+
+~~~sh
+sudo apt update
+sudo apt install bubblewrap apparmor-profiles apparmor-utils
+sudo install -m 0644 \
+  /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
+  /etc/apparmor.d/bwrap-userns-restrict
+sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+~~~
+
+Do not disable the sandbox or the system-wide user-namespace restriction. For other platforms, follow the upstream prerequisite guidance instead of applying guessed system changes.
 
 ## Use
 
-Enroll each Codex and Claude account separately. The headless Codex example forwards its native --device-auth option:
+Install and use either provider independently. The headless Codex example forwards its native --device-auth option:
 
 ~~~sh
+# Codex only
+codator doctor codex
 codator login codex personal
 codator login codex team -- --device-auth
+codator codex
+
+# Claude only
+codator doctor claude
 codator login claude personal
-codator login claude team
+codator claude --account personal --model sonnet
 ~~~
 
 Launch without an account to select automatically, or choose a label explicitly:
 
 ~~~sh
 codator codex
-codator claude --account team --model sonnet
+codator claude --account personal --model sonnet
 codator codex --account personal exec -- "explain this repository"
 ~~~
 
@@ -67,12 +98,23 @@ Put those in ~/.zshrc or ~/.bashrc and reload that file to activate them.
 
 Each label has its own native settings, sessions, and history beneath ${XDG_DATA_HOME:-$HOME/.local/share}/codator/. Files and directories use private permissions, but filesystem permissions are not encryption. Codator leaves provider credentials to their native CLIs. Codex credential-changing commands such as login and logout retain an exclusive profile lock; normal Codex sessions release it after selection, so concurrent normal Codex sessions can share a profile. Claude sessions retain the profile lock while they run.
 
+### Claude setup recovery
+
+Some native Claude versions reopen login-method setup for an already signed-in isolated profile when its safe private config has a saved `oauthAccount` but lacks `hasCompletedOnboarding`. Just before a selected Claude launch, Codator can atomically add only `hasCompletedOnboarding: true` when all of these conditions hold:
+
+- the preferred existing private config (`.config.json`, or `.claude.json` when the preferred file is absent) is safe and well-formed;
+- it has a saved OAuth account and the onboarding field is absent; and
+- an isolated, bounded `claude auth status --json` confirms a logged-in Claude.ai first-party subscription.
+
+Codator does not probe again when the field is already present, including `false` or `null`. It does not create configs, change credentials, tokens, endpoints, workspace trust, permissions, privacy choices, bypass acceptance, or model settings. A malformed, unsafe, unauthenticated, or timed-out status check leaves the config unchanged and allows native Claude setup or login to continue. Wrapper signal cancellation also leaves the config unchanged, stops the launch, and terminates the status probe. New or genuinely signed-out profiles still require `codator login claude NAME`.
+
 ## Status and selection
 
 ~~~sh
 codator status
 codator status codex
 codator status claude
+codator doctor codex
 ~~~
 
 Claude selection treats session and shared weekly limits separately from model-specific weekly limits. An explicit recognized --model can filter that model's limit, while shared limits always apply; an omitted or ambiguous model remains conservative. In status, a depleted Fable limit therefore does not mean the all-model weekly capacity is depleted. busy means another guarded operation holds the profile lock; unknown means Codator could not safely establish usable usage data; Claude cooldown output means it is temporarily avoiding another failed or unsafe usage probe.
