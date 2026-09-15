@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 )
 
 func execute(inv invocation) (int, error) {
@@ -125,11 +126,21 @@ func status(store *Store, out io.Writer, providers ...string) error {
 				continue
 			}
 			q, err := probeAccount(signals.ctx, store, provider, account, "")
+			var claudeUsage string
+			if provider == "claude" {
+				now := time.Now().UTC()
+				state, found, cacheErr := store.readClaudeProbeCache(account, now)
+				claudeUsage = claudeStatus(state, found, cacheErr, now)
+			}
 			lock.Close()
 			if signalErr := signals.ctx.Err(); signalErr != nil {
 				return signalErr
 			}
-			fmt.Fprintf(out, "%s %s: %s\n", provider, account.Name, quotaStatus(q, err))
+			if provider == "claude" {
+				fmt.Fprintf(out, "%s %s: %s\n", provider, account.Name, claudeUsage)
+			} else {
+				fmt.Fprintf(out, "%s %s: %s\n", provider, account.Name, quotaStatus(q, err))
+			}
 		}
 	}
 	return nil
@@ -337,7 +348,25 @@ func execSelected(signals *probeSignalScope, lock *AccountLock, path, provider s
 	}
 	fmt.Fprintf(os.Stderr, "codator: using %s account %s%s\n", provider, account.Name, usage)
 	if provider == "codex" {
+		if !codexCredentialMutation(nativeArgs) {
+			if err := lock.Close(); err != nil {
+				return errors.New("cannot release Codex session lock")
+			}
+			lock = nil
+		}
 		return execNative(lock, path, nativeArgs, codexEnv(account.NativeDir, os.Environ()))
 	}
 	return execNative(lock, path, nativeArgs, claudeEnv(account.NativeDir, os.Environ()))
+}
+
+func codexCredentialMutation(args []string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			return false
+		}
+		if arg == "login" || arg == "logout" {
+			return true
+		}
+	}
+	return false
 }

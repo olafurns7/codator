@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestCodatorDispatchChild(t *testing.T) {
@@ -141,9 +143,11 @@ esac
 	if err != nil || strings.TrimSpace(string(cwd)) != launchDir {
 		t.Fatalf("native cwd = %q, err %v", cwd, err)
 	}
-	if _, err := store.Lock("codex", "high"); !errors.Is(err, ErrAccountBusy) {
-		t.Fatalf("selected account lock error = %v, want busy", err)
+	activeLock, err := store.Lock("codex", "high")
+	if err != nil {
+		t.Fatalf("ordinary Codex session retained the selected account lock: %v", err)
 	}
+	activeLock.Close()
 	loserLock, err := store.Lock("codex", "low")
 	if err != nil {
 		t.Fatalf("unselected account lock was retained: %v", err)
@@ -165,6 +169,194 @@ esac
 		t.Fatalf("selected account lock was not released: %v", err)
 	}
 	selectedLock.Close()
+}
+
+func TestCodexConcurrentResumeReleasesOnlySessionLock(t *testing.T) {
+	dataHome := tempDataHome(t)
+	store, err := newStore(dataHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.EnsureAccount("codex", "work"); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	if err := os.Mkdir(binDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeBlockingCodexStub(t, filepath.Join(binDir, "codex"))
+	launches, release := filepath.Join(root, "launches"), filepath.Join(root, "release")
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := func(session string) *exec.Cmd {
+		args, err := json.Marshal([]string{"codex", "--account", "work", "resume", session})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(exe, "-test.run=^TestCodatorPassthroughChild$")
+		cmd.Env = buildEnv(os.Environ(), nil, map[string]string{
+			"CODATOR_PASSTHROUGH_CHILD": "1",
+			"CODATOR_TEST_ARGS":         string(args),
+			"CODATOR_LAUNCHES":          launches,
+			"CODATOR_RELEASE_FILE":      release,
+			"PATH":                      binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+			"XDG_DATA_HOME":             dataHome,
+		})
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		return cmd
+	}
+	first := start("first")
+	t.Cleanup(func() {
+		_ = os.WriteFile(release, nil, 0600)
+		if first.ProcessState == nil {
+			_ = first.Process.Kill()
+			_ = first.Wait()
+		}
+	})
+	waitForFile(t, launches, first)
+	if err := first.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatalf("first resume stopped before second launch: %v", err)
+	}
+	second := start("second")
+	t.Cleanup(func() {
+		if second.ProcessState == nil {
+			_ = second.Process.Kill()
+			_ = second.Wait()
+		}
+	})
+	waitForLaunchCount(t, launches, 2, first, second)
+	lock, err := store.Lock("codex", "work")
+	if err != nil {
+		t.Fatalf("active Codex resume retained the session lock: %v", err)
+	}
+	lock.Close()
+	if err := os.WriteFile(release, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Wait(); err != nil {
+		t.Fatalf("first resume: %v", err)
+	}
+	if err := second.Wait(); err != nil {
+		t.Fatalf("second resume: %v", err)
+	}
+}
+
+func TestCodexCredentialMutationsKeepProfileLock(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		args []string
+	}{
+		{name: "Codator login", args: []string{"login", "codex", "work"}},
+		{name: "native login", args: []string{"codex", "--account", "work", "login"}},
+		{name: "native logout", args: []string{"codex", "--account", "work", "logout"}},
+		{name: "native MCP login", args: []string{"codex", "--account", "work", "mcp", "login", "synthetic"}},
+		{name: "native MCP logout", args: []string{"codex", "--account", "work", "mcp", "logout", "synthetic"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dataHome := tempDataHome(t)
+			store, err := newStore(dataHome)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.EnsureAccount("codex", "work"); err != nil {
+				t.Fatal(err)
+			}
+			root := t.TempDir()
+			binDir := filepath.Join(root, "bin")
+			if err := os.Mkdir(binDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			writeBlockingCodexStub(t, filepath.Join(binDir, "codex"))
+			launches, release := filepath.Join(root, "launches"), filepath.Join(root, "release")
+			args, err := json.Marshal(test.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			exe, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(exe, "-test.run=^TestCodatorPassthroughChild$")
+			cmd.Env = buildEnv(os.Environ(), nil, map[string]string{
+				"CODATOR_PASSTHROUGH_CHILD": "1",
+				"CODATOR_TEST_ARGS":         string(args),
+				"CODATOR_LAUNCHES":          launches,
+				"CODATOR_RELEASE_FILE":      release,
+				"PATH":                      binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+				"XDG_DATA_HOME":             dataHome,
+			})
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				_ = os.WriteFile(release, nil, 0600)
+				if cmd.ProcessState == nil {
+					_ = cmd.Process.Kill()
+					_ = cmd.Wait()
+				}
+			})
+			waitForFile(t, launches, cmd)
+			if lock, err := store.Lock("codex", "work"); !errors.Is(err, ErrAccountBusy) {
+				if lock != nil {
+					lock.Close()
+				}
+				t.Fatalf("credential mutation lock error=%v, want busy", err)
+			}
+			if err := os.WriteFile(release, nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := cmd.Wait(); err != nil {
+				t.Fatalf("credential mutation: %v", err)
+			}
+		})
+	}
+}
+
+func writeBlockingCodexStub(t *testing.T, path string) {
+	t.Helper()
+	script := `#!/bin/sh
+case "$*" in
+  *app-server*)
+    while IFS= read -r line; do
+      case "$line" in
+        *'"method":"initialize"'*) printf '%s\n' '{"id":1,"result":{}}' ;;
+        *'"method":"account/read"'*) printf '%s\n' '{"id":2,"result":{"account":{"type":"chatgpt","planType":"plus"}}}' ;;
+        *'"method":"account/rateLimits/read"'*) printf '%s\n' '{"id":3,"result":{"ordinaryUsageAllowed":true,"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":4102444800},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":4102444800},"spendControlReached":false}}}}' ;;
+      esac
+    done
+    exit 0
+    ;;
+esac
+printf '%s\n' "$*" >> "$CODATOR_LAUNCHES"
+while [ ! -f "$CODATOR_RELEASE_FILE" ]; do :; done
+`
+	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitForLaunchCount(t *testing.T, path string, want int, commands ...*exec.Cmd) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if data, err := os.ReadFile(path); err == nil {
+			text := strings.TrimSuffix(string(data), "\n")
+			if text != "" && strings.Count(text, "\n")+1 >= want {
+				return
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	for _, command := range commands {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+	}
+	t.Fatalf("native launch count did not reach %d", want)
 }
 
 func TestLaunchPassesNativeArgsOpaque(t *testing.T) {
