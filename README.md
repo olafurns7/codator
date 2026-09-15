@@ -1,12 +1,12 @@
 # Codator
 
-Codator is a Linux wrapper for separate [Codex](https://learn.chatgpt.com/docs/codex/cli) and [Claude Code](https://code.claude.com/docs/en/setup) profiles. Give each subscribed account a local label; Codator checks the native CLI's usage data and chooses the eligible label with the most percentage headroom. A label is only a local profile name, not an account ID.
+Codator is a Linux and macOS wrapper for separate [Codex](https://learn.chatgpt.com/docs/codex/cli) and [Claude Code](https://code.claude.com/docs/en/setup) profiles. Give each subscribed account a local label; Codator checks the native CLI's usage data and chooses the eligible label with the most percentage headroom. A label is only a local profile name, not an account ID.
 
 It skips busy, unknown, exhausted, spend-capped, and non-subscription profiles. Codator is not affiliated with either provider and does not provide or alter account access.
 
 ## Requirements
 
-Codator release binaries support Linux x86_64/amd64 and aarch64/arm64. They need no Go runtime. Install the native CLI you plan to use and ensure it is on PATH:
+Codator release binaries support Linux x86_64/amd64 and aarch64/arm64, plus macOS 12 or later on Intel (amd64) and Apple Silicon (arm64). They need no Go runtime. Install the native CLI you plan to use and ensure it is on PATH. Native CLI requirements still apply: current Claude Code requires macOS 13 or later; Codator's macOS 12 support does not make Claude Code available on macOS 12.
 
 ~~~sh
 # Codex: https://learn.chatgpt.com/docs/codex/cli
@@ -16,7 +16,7 @@ curl -fsSL https://chatgpt.com/codex/install.sh | sh
 curl -fsSL https://claude.ai/install.sh | bash
 ~~~
 
-The Codator installer needs curl, sha256sum, and standard Linux shell utilities. It downloads only the selected GitHub release asset over HTTPS, verifies its SHA-256 checksum, and atomically replaces the binary only after verification.
+The Codator installer needs curl, standard POSIX shell utilities, and `sha256sum` (Linux) or `shasum -a 256` (macOS). It downloads only the selected GitHub release asset over HTTPS, verifies its SHA-256 checksum, and atomically replaces the binary only after verification.
 
 ## Install
 
@@ -34,7 +34,7 @@ To choose a directory or pin a release:
 
 ~~~sh
 curl -fsSL https://raw.githubusercontent.com/olafurns7/codator/main/install.sh | CODATOR_INSTALL_DIR="$HOME/bin" sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/codator/main/install.sh | CODATOR_VERSION=v0.1.0 sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/codator/main/install.sh | CODATOR_VERSION=v0.2.0 sh
 ~~~
 
 ## Use
@@ -81,16 +81,22 @@ Claude selection treats session and shared weekly limits separately from model-s
 
 Run the installer again to update (or set CODATOR_VERSION to pin it). To uninstall, remove only the installed binary, for example rm ~/.local/bin/codator. Neither action removes the profile data under ${XDG_DATA_HOME:-$HOME/.local/share}/codator/.
 
-Build from source with Go 1.24 or newer:
+Build from source with Go 1.25 or newer:
 
 ~~~sh
 go build -trimpath -o codator .
 ~~~
 
-Maintainers build the two release assets and their SHA256SUMS manifest with:
+Maintainers build four release assets and their SHA256SUMS manifest with:
 
 ~~~sh
 scripts/release.sh
 ~~~
 
 Pushing a v* tag runs checks, builds those assets, and publishes the GitHub release. Do not publish a tag until the release checks have passed.
+
+The assets are `codator-linux-amd64`, `codator-linux-arm64`, `codator-darwin-amd64`, and `codator-darwin-arm64`. Native macOS CI uses fake native adapters; it does not verify a Claude or Codex account flow on macOS.
+
+## License
+
+Codator is available under the [MIT License](LICENSE).

@@ -19,6 +19,7 @@ const (
 )
 
 var claudeBlockedEnv = map[string]bool{
+	"CLAUDE_CONFIG_DIR": true, "CLAUDE_SECURESTORAGE_CONFIG_DIR": true,
 	"ANTHROPIC_API_KEY": true, "ANTHROPIC_AUTH_TOKEN": true,
 	"CLAUDE_CODE_OAUTH_TOKEN": true, "CLAUDE_CODE_OAUTH_REFRESH_TOKEN": true,
 	"CLAUDE_CODE_OAUTH_SCOPES": true, "ANTHROPIC_PROFILE": true,
@@ -39,8 +40,9 @@ func claudeEnv(nativeDir string, base []string) []string {
 	if nativeDir != "" {
 		if absolute, err := filepath.Abs(nativeDir); err == nil {
 			nativeDir = absolute
+			overrides["CLAUDE_CONFIG_DIR"] = nativeDir
+			overrides["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = nativeDir
 		}
-		overrides["CLAUDE_CONFIG_DIR"] = nativeDir
 	}
 	filtered := make([]string, 0, len(base))
 	for _, item := range base {

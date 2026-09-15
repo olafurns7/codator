@@ -17,12 +17,29 @@ func TestInstallScript(t *testing.T) {
 	if err := os.Mkdir(fixture, 0700); err != nil {
 		t.Fatal(err)
 	}
-	asset := []byte("new Codator release binary\n")
-	if err := os.WriteFile(filepath.Join(fixture, "codator-linux-amd64"), asset, 0700); err != nil {
-		t.Fatal(err)
+	targets := []struct {
+		name    string
+		os      string
+		machine string
+		asset   string
+	}{
+		{"Linux amd64", "Linux", "x86_64", "codator-linux-amd64"},
+		{"Linux arm64", "Linux", "aarch64", "codator-linux-arm64"},
+		{"macOS Intel", "Darwin", "amd64", "codator-darwin-amd64"},
+		{"macOS Apple Silicon", "Darwin", "arm64", "codator-darwin-arm64"},
 	}
-	sum := sha256.Sum256(asset)
-	if err := os.WriteFile(filepath.Join(fixture, "SHA256SUMS"), []byte(fmt.Sprintf("%x  codator-linux-amd64\n", sum)), 0600); err != nil {
+	assets := make(map[string][]byte, len(targets))
+	var sums strings.Builder
+	for _, target := range targets {
+		asset := []byte("new Codator release binary for " + target.asset + "\n")
+		assets[target.asset] = asset
+		if err := os.WriteFile(filepath.Join(fixture, target.asset), asset, 0700); err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(asset)
+		fmt.Fprintf(&sums, "%x  %s\n", sum, target.asset)
+	}
+	if err := os.WriteFile(filepath.Join(fixture, "SHA256SUMS"), []byte(sums.String()), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -43,12 +60,14 @@ printf '%s\n' "$url" >> "$FAKE_CURL_LOG"
 case "${FAKE_CURL_MODE:-}" in
   network) exit 22 ;;
   checksum)
-    case "$url" in */codator-linux-*) printf '%s\n' corrupt > "$out"; exit 0 ;; esac
+    case "$url" in */codator-*) printf '%s\n' corrupt > "$out"; exit 0 ;; esac
     ;;
 esac
-case "$url" in
-  */SHA256SUMS) cp "$FAKE_RELEASE_FIXTURE/SHA256SUMS" "$out" ;;
-  */codator-linux-amd64) cp "$FAKE_RELEASE_FIXTURE/codator-linux-amd64" "$out" ;;
+asset=${url##*/}
+case "$asset" in
+  SHA256SUMS|codator-linux-amd64|codator-linux-arm64|codator-darwin-amd64|codator-darwin-arm64)
+    cp "$FAKE_RELEASE_FIXTURE/$asset" "$out"
+    ;;
   *) exit 22 ;;
 esac
 `)
@@ -60,17 +79,21 @@ case "$1" in
 esac
 `)
 
-	installDir := filepath.Join(root, "install dir's space")
-	run := func(t *testing.T, extra map[string]string) (string, error) {
+	isolatedBin := makeIsolatedInstallPath(t, root, fakeBin)
+	run := func(t *testing.T, installDir string, extra map[string]string, isolated bool) (string, error) {
 		t.Helper()
 		log := filepath.Join(root, strings.ReplaceAll(t.Name(), "/", "_")+".curl-log")
+		path := fakeBin + string(os.PathListSeparator) + os.Getenv("PATH")
+		if isolated {
+			path = isolatedBin
+		}
 		env := buildEnv(os.Environ(), nil, map[string]string{
 			"CODATOR_INSTALL_DIR":  installDir,
 			"CODATOR_VERSION":      "v9.9.9",
 			"FAKE_CURL_LOG":        log,
 			"FAKE_RELEASE_FIXTURE": fixture,
 			"HOME":                 filepath.Join(root, "home"),
-			"PATH":                 fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
+			"PATH":                 path,
 		})
 		for key, value := range extra {
 			env = buildEnv(env, nil, map[string]string{key: value})
@@ -105,13 +128,14 @@ esac
 		return string(output), err
 	}
 
+	installDir := filepath.Join(root, "install dir's space")
 	t.Run("installs verified pinned release into path with spaces", func(t *testing.T) {
-		output, err := run(t, nil)
+		output, err := run(t, installDir, nil, false)
 		if err != nil {
 			t.Fatalf("installer failed: %v\n%s", err, output)
 		}
 		got, err := os.ReadFile(filepath.Join(installDir, "codator"))
-		if err != nil || string(got) != string(asset) {
+		if err != nil || string(got) != string(assets["codator-linux-amd64"]) {
 			t.Fatalf("installed binary = %q, err %v", got, err)
 		}
 		log, err := os.ReadFile(filepath.Join(root, strings.ReplaceAll(t.Name(), "/", "_")+".curl-log"))
@@ -136,10 +160,28 @@ esac
 			t.Fatalf("piped installer failed: %v\n%s", err, pipedOutput)
 		}
 		piped, err := os.ReadFile(filepath.Join(pipedDir, "codator"))
-		if err != nil || string(piped) != string(asset) {
+		if err != nil || string(piped) != string(assets["codator-linux-amd64"]) {
 			t.Fatalf("piped installed binary = %q, err %v", piped, err)
 		}
 	})
+
+	for _, target := range targets {
+		t.Run("maps "+target.name, func(t *testing.T) {
+			dir := filepath.Join(root, strings.ReplaceAll(target.name, " ", "-"))
+			output, err := run(t, dir, map[string]string{"FAKE_UNAME_S": target.os, "FAKE_UNAME_M": target.machine}, false)
+			if err != nil {
+				t.Fatalf("installer failed: %v\n%s", err, output)
+			}
+			got, readErr := os.ReadFile(filepath.Join(dir, "codator"))
+			if readErr != nil || string(got) != string(assets[target.asset]) {
+				t.Fatalf("installed %s = %q, err %v", target.asset, got, readErr)
+			}
+			log, logErr := os.ReadFile(filepath.Join(root, strings.ReplaceAll(t.Name(), "/", "_")+".curl-log"))
+			if logErr != nil || !strings.Contains(string(log), "/"+target.asset) {
+				t.Fatalf("asset URL was not requested: %q, err %v", log, logErr)
+			}
+		})
+	}
 
 	for _, mode := range []string{"checksum", "network"} {
 		t.Run(mode+" failure preserves existing binary", func(t *testing.T) {
@@ -147,7 +189,7 @@ esac
 			if err := os.WriteFile(filepath.Join(installDir, "codator"), old, 0700); err != nil {
 				t.Fatal(err)
 			}
-			output, err := run(t, map[string]string{"FAKE_CURL_MODE": mode})
+			output, err := run(t, installDir, map[string]string{"FAKE_CURL_MODE": mode}, false)
 			if err == nil {
 				t.Fatalf("installer unexpectedly succeeded: %s", output)
 			}
@@ -162,12 +204,33 @@ esac
 		})
 	}
 
+	t.Run("shasum fallback works with isolated PATH", func(t *testing.T) {
+		dir := filepath.Join(root, "shasum fallback")
+		shasumLog := filepath.Join(root, "shasum.log")
+		output, err := run(t, dir, map[string]string{
+			"FAKE_UNAME_S":    "Darwin",
+			"FAKE_UNAME_M":    "arm64",
+			"FAKE_SHASUM_LOG": shasumLog,
+		}, true)
+		if err != nil {
+			t.Fatalf("installer failed with only shasum available: %v\n%s", err, output)
+		}
+		got, readErr := os.ReadFile(filepath.Join(dir, "codator"))
+		if readErr != nil || string(got) != string(assets["codator-darwin-arm64"]) {
+			t.Fatalf("fallback installed binary = %q, err %v", got, readErr)
+		}
+		log, logErr := os.ReadFile(shasumLog)
+		if logErr != nil || !strings.Contains(string(log), "-a 256") {
+			t.Fatalf("shasum fallback was not called with SHA-256: %q, err %v", log, logErr)
+		}
+	})
+
 	t.Run("unsupported platform does not replace existing binary", func(t *testing.T) {
 		old := []byte("old binary\n")
 		if err := os.WriteFile(filepath.Join(installDir, "codator"), old, 0700); err != nil {
 			t.Fatal(err)
 		}
-		output, err := run(t, map[string]string{"FAKE_UNAME_M": "mips64"})
+		output, err := run(t, installDir, map[string]string{"FAKE_UNAME_M": "mips64"}, false)
 		if err == nil || !strings.Contains(output, "unsupported architecture") {
 			t.Fatalf("installer error = %v, output %q", err, output)
 		}
@@ -185,7 +248,7 @@ esac
 		if err := os.Mkdir(target, 0700); err != nil {
 			t.Fatal(err)
 		}
-		output, err := run(t, nil)
+		output, err := run(t, installDir, nil, false)
 		if err == nil || !strings.Contains(output, "is a directory") {
 			t.Fatalf("installer error = %v, output %q", err, output)
 		}
@@ -195,6 +258,34 @@ esac
 			t.Fatalf("directory target changed: stat=%v entries=%v read=%v", statErr, entries, readErr)
 		}
 	})
+}
+
+func makeIsolatedInstallPath(t *testing.T, root, fakeBin string) string {
+	t.Helper()
+	isolated := filepath.Join(root, "isolated-path")
+	if err := os.Mkdir(isolated, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range []string{"awk", "chmod", "cp", "mkdir", "mktemp", "mv", "rm", "sed"} {
+		path, err := exec.LookPath(command)
+		if err != nil {
+			t.Fatalf("find %s: %v", command, err)
+		}
+		if err := os.Symlink(path, filepath.Join(isolated, command)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, command := range []string{"curl", "uname"} {
+		if err := os.Symlink(filepath.Join(fakeBin, command), filepath.Join(isolated, command)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	shasum, err := exec.LookPath("shasum")
+	if err != nil {
+		t.Fatalf("find native shasum: %v", err)
+	}
+	writeInstallFixture(t, filepath.Join(isolated, "shasum"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$FAKE_SHASUM_LOG\"\nexec "+shellQuote(shasum)+" \"$@\"\n")
+	return isolated
 }
 
 func writeInstallFixture(t *testing.T, path, body string) {
