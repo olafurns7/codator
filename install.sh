@@ -103,18 +103,34 @@ mv -f "$stage" "$destination" || fail "cannot install Codator"
 stage=
 
 printf 'Installed Codator at %s\n' "$destination"
+doctor_supported=false
+if "$destination" --help 2>&1 | awk '
+$1 == "codator" && $2 == "doctor" { found = 1 }
+END { exit !found }
+'; then
+	doctor_supported=true
+fi
 native_found=false
 for native in codex claude; do
 	if command -v "$native" >/dev/null 2>&1; then
 		native_found=true
-		printf 'Checking %s prerequisites:\n' "$native"
-		if ! "$destination" doctor "$native"; then
-			printf 'Codator is installed, but %s prerequisites need attention. Fix the doctor result, then run codator doctor %s again.\n' "$native" "$native" >&2
+		if [ "$doctor_supported" = true ]; then
+			printf 'Checking %s prerequisites:\n' "$native"
+			if ! "$destination" doctor "$native"; then
+				printf 'Codator is installed, but %s prerequisites need attention. Fix the doctor result, then run codator doctor %s again.\n' "$native" "$native" >&2
+			fi
 		fi
 	fi
 done
+if [ "$doctor_supported" = false ]; then
+	printf 'This Codator release does not support doctor; skipping prerequisite checks.\n'
+fi
 if [ "$native_found" = false ]; then
-	printf 'Codator is installed. Install the Codex or Claude native CLI: https://github.com/olafurns7/codator#requirements, then run codator doctor.\n'
+	if [ "$doctor_supported" = true ]; then
+		printf 'Codator is installed. Install the Codex or Claude native CLI: https://github.com/olafurns7/codator#requirements, then run codator doctor.\n'
+	else
+		printf 'Codator is installed. Install the Codex or Claude native CLI: https://github.com/olafurns7/codator#requirements.\n'
+	fi
 fi
 case ":${PATH:-}:" in
 	*":$install_dir:"*) ;;

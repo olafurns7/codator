@@ -31,7 +31,7 @@ func TestInstallScript(t *testing.T) {
 	assets := make(map[string][]byte, len(targets))
 	var sums strings.Builder
 	for _, target := range targets {
-		asset := []byte("#!/bin/sh\ncase \"${1:-}\" in\ndoctor)\n  printf '%s\\n' \"$*\" >> \"$FAKE_DOCTOR_LOG\"\n  [ \"${FAKE_DOCTOR_RESULT:-ok}\" = fail ] && exit 1\n  exit 0\n  ;;\n*) exit 99 ;;\nesac\n")
+		asset := []byte("#!/bin/sh\ncase \"${1:-}\" in\n--help|help)\n  printf '%s\\n' 'Usage:' '  codator doctor [codex|claude]'\n  exit 0\n  ;;\ndoctor)\n  printf '%s\\n' \"$*\" >> \"$FAKE_DOCTOR_LOG\"\n  [ \"${FAKE_DOCTOR_RESULT:-ok}\" = fail ] && exit 1\n  exit 0\n  ;;\n*) exit 99 ;;\nesac\n")
 		assets[target.asset] = asset
 		if err := os.WriteFile(filepath.Join(fixture, target.asset), asset, 0700); err != nil {
 			t.Fatal(err)
@@ -40,6 +40,18 @@ func TestInstallScript(t *testing.T) {
 		fmt.Fprintf(&sums, "%x  %s\n", sum, target.asset)
 	}
 	if err := os.WriteFile(filepath.Join(fixture, "SHA256SUMS"), []byte(sums.String()), 0600); err != nil {
+		t.Fatal(err)
+	}
+	legacyFixture := filepath.Join(root, "legacy-fixture")
+	if err := os.Mkdir(legacyFixture, 0700); err != nil {
+		t.Fatal(err)
+	}
+	legacyAsset := []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$FAKE_LEGACY_LOG\"\ncase \"${1:-}\" in\n--help|help)\n  printf '%s\\n' 'Usage:' '  codator status [codex|claude]'\n  exit 0\n  ;;\ndoctor) exit 2 ;;\n*) exit 99 ;;\nesac\n")
+	if err := os.WriteFile(filepath.Join(legacyFixture, "codator-linux-amd64"), legacyAsset, 0700); err != nil {
+		t.Fatal(err)
+	}
+	legacySum := sha256.Sum256(legacyAsset)
+	if err := os.WriteFile(filepath.Join(legacyFixture, "SHA256SUMS"), []byte(fmt.Sprintf("%x  codator-linux-amd64\n", legacySum)), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -220,6 +232,28 @@ esac
 		log, readErr := os.ReadFile(filepath.Join(root, strings.ReplaceAll(t.Name(), "/", "_")+".doctor-log"))
 		if readErr != nil || string(log) != "doctor codex\n" {
 			t.Fatalf("doctor log=%q err=%v", log, readErr)
+		}
+	})
+
+	t.Run("older release skips unsupported doctor", func(t *testing.T) {
+		dir := filepath.Join(root, "legacy-release")
+		legacyLog := filepath.Join(root, "legacy.log")
+		output, err := run(t, dir, map[string]string{
+			"FAKE_RELEASE_FIXTURE": legacyFixture,
+			"FAKE_LEGACY_LOG":      legacyLog,
+		}, false)
+		if err != nil {
+			t.Fatalf("legacy installer failed: %v\n%s", err, output)
+		}
+		if !strings.Contains(output, "does not support doctor; skipping prerequisite checks") || strings.Contains(output, "Checking codex prerequisites") {
+			t.Fatalf("legacy installer output=%q", output)
+		}
+		if log, err := os.ReadFile(legacyLog); err != nil || string(log) != "--help\n" {
+			t.Fatalf("legacy release invocation log=%q err=%v", log, err)
+		}
+		got, err := os.ReadFile(filepath.Join(dir, "codator"))
+		if err != nil || string(got) != string(legacyAsset) {
+			t.Fatalf("legacy installed binary=%q err=%v", got, err)
 		}
 	})
 

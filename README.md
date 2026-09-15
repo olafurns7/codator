@@ -37,7 +37,7 @@ curl -fsSL https://raw.githubusercontent.com/olafurns7/codator/main/install.sh |
 curl -fsSL https://raw.githubusercontent.com/olafurns7/codator/main/install.sh | CODATOR_VERSION=v0.3.0 sh
 ~~~
 
-After a verified install, the installer runs `codator doctor` for each native CLI it finds. A missing optional provider does not block installation. If a prerequisite needs attention, the binary is still installed and the installer prints the doctor result; fix it before that provider is launched. If neither native CLI is installed, it prints the native-install and doctor next step. The installer never uses `sudo` or changes shell, security, or profile settings.
+After a verified install, the installer runs `codator doctor` for each native CLI it finds, when the installed release supports it. Older releases get a short notice instead. A missing optional provider does not block installation. If a prerequisite needs attention, the binary is still installed and the installer prints the doctor result; fix it before that provider is launched. If neither native CLI is installed, it prints the native-install next step. The installer never uses `sudo` or changes shell, security, or profile settings.
 
 For Codex on Linux, install the distribution `bubblewrap` package so `bwrap` is on PATH. After Codator is installed, check the native CLI you plan to use before login or launch:
 

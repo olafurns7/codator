@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -107,6 +108,9 @@ func TestDoctorLinuxSandboxReportsReadyBlockedAndTimeout(t *testing.T) {
 }
 
 func TestDoctorSignalCancelsBwrapGroup(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("public doctor uses bwrap only on Linux")
+	}
 	root := t.TempDir()
 	bin := filepath.Join(root, "bin")
 	if err := os.Mkdir(bin, 0700); err != nil {

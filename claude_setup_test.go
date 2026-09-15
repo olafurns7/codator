@@ -41,6 +41,10 @@ func TestClaudeSetupRecoveryLaunchesSelectedProfile(t *testing.T) {
 			if err := os.Mkdir(launchDir, 0700); err != nil {
 				t.Fatal(err)
 			}
+			canonicalLaunchDir, err := filepath.EvalSymlinks(launchDir)
+			if err != nil {
+				t.Fatal(err)
+			}
 			cmd := exec.Command(exe, "-test.run=^TestCodatorPassthroughChild$")
 			cmd.Dir = launchDir
 			cmd.Env = []string{
@@ -65,7 +69,7 @@ func TestClaudeSetupRecoveryLaunchesSelectedProfile(t *testing.T) {
 				t.Fatalf("native argv=%q err=%v", captured, err)
 			}
 			gotCWD, err := os.ReadFile(cwd)
-			if err != nil || strings.TrimSpace(string(gotCWD)) != launchDir {
+			if err != nil || strings.TrimSpace(string(gotCWD)) != canonicalLaunchDir {
 				t.Fatalf("native cwd=%q err=%v", gotCWD, err)
 			}
 			if countClaudeSetupFile(t, account, ".auth-count") != 1 || !strings.Contains(stderr.String(), "recovered Claude setup state") {
