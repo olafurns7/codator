@@ -68,6 +68,7 @@ func TestLaunchBestSelectsAccountAndPreservesContext(t *testing.T) {
 	launchFile := filepath.Join(root, "selected")
 	argsFile := filepath.Join(root, "args")
 	cwdFile := filepath.Join(root, "cwd")
+	readyFile := filepath.Join(root, "native-ready")
 	releaseFile := filepath.Join(root, "release")
 	stub := filepath.Join(binDir, "codex")
 	script := `#!/bin/sh
@@ -90,6 +91,7 @@ case "$*" in
     printf '%s\n' "$profile" > "$CODATOR_LAUNCH_FILE"
     printf '%s\n' "$@" > "$CODATOR_LAUNCH_ARGS_FILE"
     pwd -P > "$CODATOR_LAUNCH_CWD_FILE"
+    printf ready > "$CODATOR_LAUNCH_READY_FILE"
     while [ ! -f "$CODATOR_RELEASE_FILE" ]; do :; done
     exit 23
     ;;
@@ -109,13 +111,14 @@ esac
 	cmd := exec.Command(exe, "-test.run=^TestCodatorDispatchChild$")
 	cmd.Dir = launchDir
 	cmd.Env = buildEnv(os.Environ(), nil, map[string]string{
-		"CODATOR_DISPATCH_CHILD":   "1",
-		"CODATOR_LAUNCH_FILE":      launchFile,
-		"CODATOR_LAUNCH_ARGS_FILE": argsFile,
-		"CODATOR_LAUNCH_CWD_FILE":  cwdFile,
-		"CODATOR_RELEASE_FILE":     releaseFile,
-		"PATH":                     binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-		"XDG_DATA_HOME":            dataHome,
+		"CODATOR_DISPATCH_CHILD":    "1",
+		"CODATOR_LAUNCH_FILE":       launchFile,
+		"CODATOR_LAUNCH_ARGS_FILE":  argsFile,
+		"CODATOR_LAUNCH_CWD_FILE":   cwdFile,
+		"CODATOR_LAUNCH_READY_FILE": readyFile,
+		"CODATOR_RELEASE_FILE":      releaseFile,
+		"PATH":                      binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"XDG_DATA_HOME":             dataHome,
 	})
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -129,7 +132,7 @@ esac
 			_ = cmd.Wait()
 		}
 	})
-	waitForFile(t, launchFile, cmd)
+	waitForFile(t, readyFile, cmd)
 
 	selected, err := os.ReadFile(launchFile)
 	if err != nil || strings.TrimSpace(string(selected)) != "high" {

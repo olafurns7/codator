@@ -76,6 +76,12 @@ func TestParseInvocation(t *testing.T) {
 	if _, err := parseInvocation([]string{"login", "codex", "personal", "--with-api-key"}); err == nil {
 		t.Fatal("accepted native login options without separator")
 	}
+	if got, err := parseInvocation([]string{"doctor", "claude"}); err != nil || got.verb != "doctor" || got.provider != "claude" {
+		t.Fatalf("doctor invocation=%+v err=%v", got, err)
+	}
+	if _, err := parseInvocation([]string{"doctor", "both"}); err == nil {
+		t.Fatal("accepted an invalid doctor provider")
+	}
 }
 
 func TestClaudeModelHintUsesOnlyUnambiguousNativeModelFlags(t *testing.T) {

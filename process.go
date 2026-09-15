@@ -108,3 +108,13 @@ func finishProbe(cmd *exec.Cmd) {
 	}
 	_ = cmd.Wait()
 }
+
+// waitProbe also clears descendants after a probe parent exits normally.
+// CommandContext handles cancellation through probeCommand's process-group Cancel.
+func waitProbe(cmd *exec.Cmd) error {
+	err := cmd.Wait()
+	if cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	return err
+}

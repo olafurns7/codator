@@ -31,7 +31,7 @@ func TestInstallScript(t *testing.T) {
 	assets := make(map[string][]byte, len(targets))
 	var sums strings.Builder
 	for _, target := range targets {
-		asset := []byte("new Codator release binary for " + target.asset + "\n")
+		asset := []byte("#!/bin/sh\ncase \"${1:-}\" in\n--help|help)\n  printf '%s\\n' 'Usage:' '  codator doctor [codex|claude]'\n  exit 0\n  ;;\ndoctor)\n  printf '%s\\n' \"$*\" >> \"$FAKE_DOCTOR_LOG\"\n  [ \"${FAKE_DOCTOR_RESULT:-ok}\" = fail ] && exit 1\n  exit 0\n  ;;\n*) exit 99 ;;\nesac\n")
 		assets[target.asset] = asset
 		if err := os.WriteFile(filepath.Join(fixture, target.asset), asset, 0700); err != nil {
 			t.Fatal(err)
@@ -40,6 +40,18 @@ func TestInstallScript(t *testing.T) {
 		fmt.Fprintf(&sums, "%x  %s\n", sum, target.asset)
 	}
 	if err := os.WriteFile(filepath.Join(fixture, "SHA256SUMS"), []byte(sums.String()), 0600); err != nil {
+		t.Fatal(err)
+	}
+	legacyFixture := filepath.Join(root, "legacy-fixture")
+	if err := os.Mkdir(legacyFixture, 0700); err != nil {
+		t.Fatal(err)
+	}
+	legacyAsset := []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$FAKE_LEGACY_LOG\"\ncase \"${1:-}\" in\n--help|help)\n  printf '%s\\n' 'Usage:' '  codator status [codex|claude]'\n  exit 0\n  ;;\ndoctor) exit 2 ;;\n*) exit 99 ;;\nesac\n")
+	if err := os.WriteFile(filepath.Join(legacyFixture, "codator-linux-amd64"), legacyAsset, 0700); err != nil {
+		t.Fatal(err)
+	}
+	legacySum := sha256.Sum256(legacyAsset)
+	if err := os.WriteFile(filepath.Join(legacyFixture, "SHA256SUMS"), []byte(fmt.Sprintf("%x  codator-linux-amd64\n", legacySum)), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -78,8 +90,19 @@ case "$1" in
   *) exit 1 ;;
 esac
 `)
+	for _, native := range []string{"codex", "claude"} {
+		writeInstallFixture(t, filepath.Join(fakeBin, native), "#!/bin/sh\nexit 99\n")
+	}
 
 	isolatedBin := makeIsolatedInstallPath(t, root, fakeBin)
+	oneProviderRoot := filepath.Join(root, "one-provider-root")
+	if err := os.Mkdir(oneProviderRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	oneProviderBin := makeIsolatedInstallPath(t, oneProviderRoot, fakeBin)
+	if err := os.Symlink(filepath.Join(fakeBin, "codex"), filepath.Join(oneProviderBin, "codex")); err != nil {
+		t.Fatal(err)
+	}
 	run := func(t *testing.T, installDir string, extra map[string]string, isolated bool) (string, error) {
 		t.Helper()
 		log := filepath.Join(root, strings.ReplaceAll(t.Name(), "/", "_")+".curl-log")
@@ -87,10 +110,14 @@ esac
 		if isolated {
 			path = isolatedBin
 		}
+		if extraPath, ok := extra["CODATOR_TEST_PATH"]; ok {
+			path = extraPath
+		}
 		env := buildEnv(os.Environ(), nil, map[string]string{
 			"CODATOR_INSTALL_DIR":  installDir,
 			"CODATOR_VERSION":      "v9.9.9",
 			"FAKE_CURL_LOG":        log,
+			"FAKE_DOCTOR_LOG":      filepath.Join(root, strings.ReplaceAll(t.Name(), "/", "_")+".doctor-log"),
 			"FAKE_RELEASE_FIXTURE": fixture,
 			"HOME":                 filepath.Join(root, "home"),
 			"PATH":                 path,
@@ -111,6 +138,7 @@ esac
 		t.Helper()
 		env := buildEnv(os.Environ(), nil, map[string]string{
 			"FAKE_CURL_LOG":        filepath.Join(root, "piped.curl-log"),
+			"FAKE_DOCTOR_LOG":      filepath.Join(root, "piped.doctor-log"),
 			"FAKE_CURL_MODE":       "",
 			"FAKE_RELEASE_FIXTURE": fixture,
 			"FAKE_UNAME_M":         "x86_64",
@@ -133,6 +161,9 @@ esac
 		output, err := run(t, installDir, nil, false)
 		if err != nil {
 			t.Fatalf("installer failed: %v\n%s", err, output)
+		}
+		if log, err := os.ReadFile(filepath.Join(root, strings.ReplaceAll(t.Name(), "/", "_")+".doctor-log")); err != nil || string(log) != "doctor codex\ndoctor claude\n" {
+			t.Fatalf("installer did not run doctor for installed native CLIs: %q err=%v", log, err)
 		}
 		got, err := os.ReadFile(filepath.Join(installDir, "codator"))
 		if err != nil || string(got) != string(assets["codator-linux-amd64"]) {
@@ -159,6 +190,9 @@ esac
 		if err != nil {
 			t.Fatalf("piped installer failed: %v\n%s", err, pipedOutput)
 		}
+		if log, err := os.ReadFile(filepath.Join(root, "piped.doctor-log")); err != nil || string(log) != "doctor codex\ndoctor claude\n" {
+			t.Fatalf("piped installer did not run doctor: %q err=%v", log, err)
+		}
 		piped, err := os.ReadFile(filepath.Join(pipedDir, "codator"))
 		if err != nil || string(piped) != string(assets["codator-linux-amd64"]) {
 			t.Fatalf("piped installed binary = %q, err %v", piped, err)
@@ -182,6 +216,60 @@ esac
 			}
 		})
 	}
+
+	t.Run("one installed provider is sufficient even when doctor needs attention", func(t *testing.T) {
+		dir := filepath.Join(root, "one-provider")
+		output, err := run(t, dir, map[string]string{
+			"CODATOR_TEST_PATH":  oneProviderBin,
+			"FAKE_DOCTOR_RESULT": "fail",
+		}, false)
+		if err != nil {
+			t.Fatalf("installer treated optional provider or doctor warning as an install failure: %v\n%s", err, output)
+		}
+		if !strings.Contains(output, "Installed Codator") || !strings.Contains(output, "codex prerequisites need attention") || strings.Contains(output, "Checking claude prerequisites") {
+			t.Fatalf("installer output=%q", output)
+		}
+		log, readErr := os.ReadFile(filepath.Join(root, strings.ReplaceAll(t.Name(), "/", "_")+".doctor-log"))
+		if readErr != nil || string(log) != "doctor codex\n" {
+			t.Fatalf("doctor log=%q err=%v", log, readErr)
+		}
+	})
+
+	t.Run("older release skips unsupported doctor", func(t *testing.T) {
+		dir := filepath.Join(root, "legacy-release")
+		legacyLog := filepath.Join(root, "legacy.log")
+		output, err := run(t, dir, map[string]string{
+			"FAKE_RELEASE_FIXTURE": legacyFixture,
+			"FAKE_LEGACY_LOG":      legacyLog,
+		}, false)
+		if err != nil {
+			t.Fatalf("legacy installer failed: %v\n%s", err, output)
+		}
+		if !strings.Contains(output, "does not support doctor; skipping prerequisite checks") || strings.Contains(output, "Checking codex prerequisites") {
+			t.Fatalf("legacy installer output=%q", output)
+		}
+		if log, err := os.ReadFile(legacyLog); err != nil || string(log) != "--help\n" {
+			t.Fatalf("legacy release invocation log=%q err=%v", log, err)
+		}
+		got, err := os.ReadFile(filepath.Join(dir, "codator"))
+		if err != nil || string(got) != string(legacyAsset) {
+			t.Fatalf("legacy installed binary=%q err=%v", got, err)
+		}
+	})
+
+	t.Run("no native provider gives a next step", func(t *testing.T) {
+		dir := filepath.Join(root, "no-provider")
+		output, err := run(t, dir, map[string]string{"CODATOR_TEST_PATH": isolatedBin}, false)
+		if err != nil {
+			t.Fatalf("installer failed without optional native CLIs: %v\n%s", err, output)
+		}
+		if !strings.Contains(output, "Install the Codex or Claude native CLI") || !strings.Contains(output, "codator doctor") {
+			t.Fatalf("installer output=%q", output)
+		}
+		if _, err := os.Stat(filepath.Join(root, strings.ReplaceAll(t.Name(), "/", "_")+".doctor-log")); !os.IsNotExist(err) {
+			t.Fatalf("installer ran doctor without a native CLI: %v", err)
+		}
+	})
 
 	for _, mode := range []string{"checksum", "network"} {
 		t.Run(mode+" failure preserves existing binary", func(t *testing.T) {
