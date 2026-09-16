@@ -1,0 +1,24 @@
+#!/bin/sh
+
+# Codator consumes --account only before the native Claude options.
+cdl_has_account=0
+if [ "${1-}" = "--account" ]; then
+    if [ "$#" -lt 2 ]; then
+        exec codator claude "$@"
+    fi
+    cdl_has_account=1
+    cdl_account=$2
+    shift 2
+fi
+
+# Keep help and version on Codator's account-free information path.
+case "${1-}" in
+    -h|--help|-v|--version) ;;
+    *) set -- --dangerously-skip-permissions --permission-mode bypassPermissions "$@" ;;
+esac
+
+if [ "$cdl_has_account" = 1 ]; then
+    set -- --account "$cdl_account" "$@"
+fi
+
+exec codator claude "$@"
