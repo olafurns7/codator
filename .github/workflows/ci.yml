@@ -35,7 +35,7 @@ jobs:
       - name: Test
         run: GOMAXPROCS=2 go test -race -p=1 ./...
       - name: Check shell scripts
-        run: sh -n install.sh && sh -n scripts/release.sh
+        run: sh -n install.sh && sh -n scripts/cdx && sh -n scripts/cdl && sh -n scripts/release.sh
       - name: Build and smoke native release-style binary
         run: |
           CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o codator .

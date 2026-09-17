@@ -87,13 +87,18 @@ codator claude --account personal --model sonnet
 codator codex --account personal exec -- "explain this repository"
 ~~~
 
-Codator consumes only a leading --account NAME; every other native argument is forwarded unchanged and in order, including --. Optional Codex alias:
+Codator consumes only a leading --account NAME; every other native argument is forwarded unchanged and in order, including --.
+
+For an optional `cdx` shortcut that selects an account automatically and starts Codex with full access and no command approvals, install the helper from a source checkout:
 
 ~~~sh
-alias cdx='codator codex'
+install -m 0755 scripts/cdx "$HOME/.local/bin/cdx"
+unalias cdx 2>/dev/null || true
+cdx
+cdx --account personal --model gpt-5.6-luna
 ~~~
 
-Put it in ~/.zshrc or ~/.bashrc and reload that file to activate it.
+The helper keeps native flags available and forwards them unchanged. Remove any old `alias cdx='codator codex'` from your shell configuration, then reload it, for example with `. ~/.zshrc`.
 
 For a `cdl` shortcut that starts Claude with `--dangerously-skip-permissions --permission-mode bypassPermissions`, install the helper from a source checkout:
 
@@ -104,7 +109,7 @@ cdl
 cdl --account personal --model sonnet
 ~~~
 
-Remove any old `alias cdl='codator claude'` from your shell configuration so it does not override the helper. The helper preserves leading `--account NAME` selection, native arguments, and the account-free help/version commands. Bypass mode skips Claude's permission checks; it is an explicit choice made by this shortcut.
+Remove any old `alias cdl='codator claude'` from your shell configuration so it does not override the helper, then reload that file. The helper preserves leading `--account NAME` selection, native arguments, and the account-free help/version commands. Bypass mode skips Claude's permission checks; it is an explicit choice made by this shortcut.
 
 Each label has its own native settings, sessions, and history beneath ${XDG_DATA_HOME:-$HOME/.local/share}/codator/. Files and directories use private permissions, but filesystem permissions are not encryption. Codator leaves provider credentials to their native CLIs. Codex credential-changing commands such as login and logout retain an exclusive profile lock; normal Codex sessions release it after selection, so concurrent normal Codex sessions can share a profile. Claude sessions retain the profile lock while they run.
 
@@ -147,7 +152,7 @@ scripts/release.sh
 
 Pushing a v* tag runs checks, builds those assets, and publishes the GitHub release. Do not publish a tag until the release checks have passed.
 
-The assets are `codator-linux-amd64`, `codator-linux-arm64`, `codator-darwin-amd64`, and `codator-darwin-arm64`. Native macOS CI uses fake native adapters; it does not verify a Claude or Codex account flow on macOS.
+The assets are `codator-linux-amd64`, `codator-linux-arm64`, `codator-darwin-amd64`, and `codator-darwin-arm64`. Releases also include optional `cdx` and `cdl` helper downloads; install those manually only if wanted. The binary installer does not install shortcuts. Native macOS CI uses fake native adapters; it does not verify a Claude or Codex account flow on macOS.
 
 ## License
 
