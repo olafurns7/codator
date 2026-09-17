@@ -362,24 +362,27 @@ func execSelected(signals *probeSignalScope, store *Store, lock *AccountLock, pa
 		usage = " (usage unknown)"
 	}
 	fmt.Fprintf(os.Stderr, "codator: using %s account %s%s\n", provider, account.Name, usage)
-	if provider == "codex" {
-		if !codexCredentialMutation(nativeArgs) {
-			if err := lock.Close(); err != nil {
-				return errors.New("cannot release Codex session lock")
-			}
-			lock = nil
+	if !credentialMutation(provider, nativeArgs) {
+		if err := lock.Close(); err != nil {
+			return errors.New("cannot release session lock")
 		}
+		lock = nil
+	}
+	if provider == "codex" {
 		return execNative(lock, path, nativeArgs, codexEnv(account.NativeDir, os.Environ()))
 	}
 	return execNative(lock, path, nativeArgs, claudeEnv(account.NativeDir, os.Environ()))
 }
 
-func codexCredentialMutation(args []string) bool {
+func credentialMutation(provider string, args []string) bool {
 	for _, arg := range args {
 		if arg == "--" {
 			return false
 		}
 		if arg == "login" || arg == "logout" {
+			return true
+		}
+		if provider == "claude" && arg == "setup-token" {
 			return true
 		}
 	}
