@@ -249,6 +249,159 @@ func TestCodexConcurrentResumeReleasesOnlySessionLock(t *testing.T) {
 	}
 }
 
+func TestClaudeOrdinarySessionsReleaseProfileLock(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		args         []string
+		recoverSetup bool
+	}{
+		{name: "interactive", args: []string{"claude", "--account", "work"}, recoverSetup: true},
+		{name: "print", args: []string{"claude", "--account", "work", "-p", "synthetic prompt"}},
+		{name: "resume", args: []string{"claude", "--account", "work", "--resume", "synthetic-session"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dataHome := tempDataHome(t)
+			store, err := newStore(dataHome)
+			if err != nil {
+				t.Fatal(err)
+			}
+			account, err := store.EnsureAccount("claude", "work")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.recoverSetup {
+				if err := os.WriteFile(filepath.Join(account.NativeDir, ".claude.json"), []byte(`{"oauthAccount":{"id":"synthetic"}}`), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			root := tempDataHome(t)
+			binDir := filepath.Join(root, "bin")
+			if err := os.Mkdir(binDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			writeBlockingClaudeStub(t, filepath.Join(binDir, "claude"))
+			launches, release := filepath.Join(root, "launches"), filepath.Join(root, "release")
+			args, err := json.Marshal(test.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			exe, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(exe, "-test.run=^TestCodatorPassthroughChild$")
+			cmd.Env = buildEnv(os.Environ(), nil, map[string]string{
+				"CODATOR_PASSTHROUGH_CHILD": "1",
+				"CODATOR_TEST_ARGS":         string(args),
+				"CODATOR_LAUNCHES":          launches,
+				"CODATOR_RELEASE_FILE":      release,
+				"PATH":                      binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+				"XDG_DATA_HOME":             dataHome,
+			})
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				_ = os.WriteFile(release, nil, 0600)
+				if cmd.ProcessState == nil {
+					_ = cmd.Process.Kill()
+					_ = cmd.Wait()
+				}
+			})
+			waitForFile(t, launches, cmd)
+			if test.recoverSetup {
+				config, err := os.ReadFile(filepath.Join(account.NativeDir, ".claude.json"))
+				if err != nil || !strings.Contains(string(config), `"hasCompletedOnboarding":true`) {
+					t.Fatalf("setup recovery did not finish before native launch: config=%q err=%v", config, err)
+				}
+			}
+			lock, err := store.Lock("claude", "work")
+			if err != nil {
+				t.Fatalf("ordinary Claude session retained the selected account lock: %v", err)
+			}
+			lock.Close()
+			if err := os.WriteFile(release, nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := cmd.Wait(); err != nil {
+				t.Fatalf("ordinary Claude session: %v", err)
+			}
+		})
+	}
+}
+
+func TestClaudeConcurrentResumeReleasesOnlySessionLock(t *testing.T) {
+	dataHome := tempDataHome(t)
+	store, err := newStore(dataHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.EnsureAccount("claude", "work"); err != nil {
+		t.Fatal(err)
+	}
+	root := tempDataHome(t)
+	binDir := filepath.Join(root, "bin")
+	if err := os.Mkdir(binDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeBlockingClaudeStub(t, filepath.Join(binDir, "claude"))
+	launches, release := filepath.Join(root, "launches"), filepath.Join(root, "release")
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := func(session string) *exec.Cmd {
+		args, err := json.Marshal([]string{"claude", "--account", "work", "--resume", session})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(exe, "-test.run=^TestCodatorPassthroughChild$")
+		cmd.Env = buildEnv(os.Environ(), nil, map[string]string{
+			"CODATOR_PASSTHROUGH_CHILD": "1",
+			"CODATOR_TEST_ARGS":         string(args),
+			"CODATOR_LAUNCHES":          launches,
+			"CODATOR_RELEASE_FILE":      release,
+			"PATH":                      binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+			"XDG_DATA_HOME":             dataHome,
+		})
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		return cmd
+	}
+	first := start("first")
+	t.Cleanup(func() {
+		_ = os.WriteFile(release, nil, 0600)
+		if first.ProcessState == nil {
+			_ = first.Process.Kill()
+			_ = first.Wait()
+		}
+	})
+	waitForFile(t, launches, first)
+	second := start("second")
+	t.Cleanup(func() {
+		if second.ProcessState == nil {
+			_ = second.Process.Kill()
+			_ = second.Wait()
+		}
+	})
+	waitForLaunchCount(t, launches, 2, first, second)
+	lock, err := store.Lock("claude", "work")
+	if err != nil {
+		t.Fatalf("active Claude resume retained the session lock: %v", err)
+	}
+	lock.Close()
+	if err := os.WriteFile(release, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Wait(); err != nil {
+		t.Fatalf("first resume: %v", err)
+	}
+	if err := second.Wait(); err != nil {
+		t.Fatalf("second resume: %v", err)
+	}
+}
+
 func TestCodexCredentialMutationsKeepProfileLock(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -320,6 +473,79 @@ func TestCodexCredentialMutationsKeepProfileLock(t *testing.T) {
 	}
 }
 
+func TestClaudeCredentialMutationsKeepProfileLock(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		args []string
+	}{
+		{name: "Codator login", args: []string{"login", "claude", "work"}},
+		{name: "native auth login", args: []string{"claude", "--account", "work", "auth", "login"}},
+		{name: "native auth logout", args: []string{"claude", "--account", "work", "auth", "logout"}},
+		{name: "native setup token", args: []string{"claude", "--account", "work", "setup-token"}},
+		{name: "native auth login after delimiter", args: []string{"claude", "--account", "work", "--", "auth", "login"}},
+		{name: "native auth logout after delimiter", args: []string{"claude", "--account", "work", "--", "auth", "logout"}},
+		{name: "native setup token after delimiter", args: []string{"claude", "--account", "work", "--", "setup-token"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dataHome := tempDataHome(t)
+			store, err := newStore(dataHome)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.EnsureAccount("claude", "work"); err != nil {
+				t.Fatal(err)
+			}
+			root := tempDataHome(t)
+			binDir := filepath.Join(root, "bin")
+			if err := os.Mkdir(binDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			writeBlockingClaudeStub(t, filepath.Join(binDir, "claude"))
+			launches, release := filepath.Join(root, "launches"), filepath.Join(root, "release")
+			args, err := json.Marshal(test.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			exe, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(exe, "-test.run=^TestCodatorPassthroughChild$")
+			cmd.Env = buildEnv(os.Environ(), nil, map[string]string{
+				"CODATOR_PASSTHROUGH_CHILD": "1",
+				"CODATOR_TEST_ARGS":         string(args),
+				"CODATOR_LAUNCHES":          launches,
+				"CODATOR_RELEASE_FILE":      release,
+				"PATH":                      binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+				"XDG_DATA_HOME":             dataHome,
+			})
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				_ = os.WriteFile(release, nil, 0600)
+				if cmd.ProcessState == nil {
+					_ = cmd.Process.Kill()
+					_ = cmd.Wait()
+				}
+			})
+			waitForFile(t, launches, cmd)
+			if lock, err := store.Lock("claude", "work"); !errors.Is(err, ErrAccountBusy) {
+				if lock != nil {
+					lock.Close()
+				}
+				t.Fatalf("credential mutation lock error=%v, want busy", err)
+			}
+			if err := os.WriteFile(release, nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := cmd.Wait(); err != nil {
+				t.Fatalf("credential mutation: %v", err)
+			}
+		})
+	}
+}
+
 func writeBlockingCodexStub(t *testing.T, path string) {
 	t.Helper()
 	script := `#!/bin/sh
@@ -335,6 +561,30 @@ case "$*" in
     exit 0
     ;;
 esac
+printf '%s\n' "$*" >> "$CODATOR_LAUNCHES"
+while [ ! -f "$CODATOR_RELEASE_FILE" ]; do :; done
+`
+	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeBlockingClaudeStub(t *testing.T, path string) {
+	t.Helper()
+	script := `#!/bin/sh
+if [ "$1" = auth ] && [ "$2" = status ]; then
+  printf '%s\n' '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"max"}'
+  exit 0
+fi
+if [ "$1" = --print ]; then
+  while IFS= read -r line; do
+    case "$line" in
+      *'"request_id":"init-1"'*) printf '%s\n' '{"type":"control_response","response":{"subtype":"success","request_id":"init-1","response":{}}}' ;;
+      *'"request_id":"usage-1"'*) printf '%s\n' '{"type":"control_response","response":{"subtype":"success","request_id":"usage-1","response":{"subscription_type":"max","rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":10,"resets_at":"2099-01-01T00:00:00Z"}}}}}' ;;
+    esac
+  done
+  exit 0
+fi
 printf '%s\n' "$*" >> "$CODATOR_LAUNCHES"
 while [ ! -f "$CODATOR_RELEASE_FILE" ]; do :; done
 `

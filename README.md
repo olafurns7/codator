@@ -111,7 +111,7 @@ cdl --account personal --model sonnet
 
 Remove any old `alias cdl='codator claude'` from your shell configuration so it does not override the helper, then reload that file. The helper preserves leading `--account NAME` selection, native arguments, and the account-free help/version commands. Bypass mode skips Claude's permission checks; it is an explicit choice made by this shortcut.
 
-Each label has its own native settings, sessions, and history beneath ${XDG_DATA_HOME:-$HOME/.local/share}/codator/. Files and directories use private permissions, but filesystem permissions are not encryption. Codator leaves provider credentials to their native CLIs. Codex credential-changing commands such as login and logout retain an exclusive profile lock; normal Codex sessions release it after selection, so concurrent normal Codex sessions can share a profile. Claude sessions retain the profile lock while they run.
+Each label has its own native settings, sessions, and history beneath ${XDG_DATA_HOME:-$HOME/.local/share}/codator/. Files and directories use private permissions, but filesystem permissions are not encryption. Codator leaves provider credentials to their native CLIs. Credential-changing commands retain an exclusive profile lock; normal Codex and Claude sessions release it after selection, so concurrent normal sessions can share a profile.
 
 ### Claude setup recovery
 
