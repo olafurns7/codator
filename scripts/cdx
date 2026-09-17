@@ -1,0 +1,24 @@
+#!/bin/sh
+
+# Codator consumes --account only before the native Codex options.
+cdx_has_account=0
+if [ "${1-}" = "--account" ]; then
+    if [ "$#" -lt 2 ]; then
+        exec codator codex "$@"
+    fi
+    cdx_has_account=1
+    cdx_account=$2
+    shift 2
+fi
+
+# Keep help and version on Codator's account-free information path.
+case "${1-}" in
+    -h|--help|-V|--version) ;;
+    *) set -- -c 'approval_policy="never"' -c 'sandbox_mode="danger-full-access"' "$@" ;;
+esac
+
+if [ "$cdx_has_account" = 1 ]; then
+    set -- --account "$cdx_account" "$@"
+fi
+
+exec codator codex "$@"
