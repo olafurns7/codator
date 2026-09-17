@@ -482,6 +482,9 @@ func TestClaudeCredentialMutationsKeepProfileLock(t *testing.T) {
 		{name: "native auth login", args: []string{"claude", "--account", "work", "auth", "login"}},
 		{name: "native auth logout", args: []string{"claude", "--account", "work", "auth", "logout"}},
 		{name: "native setup token", args: []string{"claude", "--account", "work", "setup-token"}},
+		{name: "native auth login after delimiter", args: []string{"claude", "--account", "work", "--", "auth", "login"}},
+		{name: "native auth logout after delimiter", args: []string{"claude", "--account", "work", "--", "auth", "logout"}},
+		{name: "native setup token after delimiter", args: []string{"claude", "--account", "work", "--", "setup-token"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			dataHome := tempDataHome(t)

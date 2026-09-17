@@ -376,7 +376,8 @@ func execSelected(signals *probeSignalScope, store *Store, lock *AccountLock, pa
 
 func credentialMutation(provider string, args []string) bool {
 	for _, arg := range args {
-		if arg == "--" {
+		// Claude can still dispatch credential subcommands after --.
+		if arg == "--" && provider == "codex" {
 			return false
 		}
 		if arg == "login" || arg == "logout" {
