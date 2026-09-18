@@ -16,12 +16,12 @@ for platform in linux darwin; do
 	build "$platform" arm64
 done
 cp LICENSE "$dist/LICENSE"
-cp scripts/cdx scripts/cdl "$dist/"
+cp scripts/cdx scripts/cdl install.sh "$dist/"
 (
 	cd "$dist"
 	if command -v sha256sum >/dev/null 2>&1; then
-		sha256sum codator-linux-amd64 codator-linux-arm64 codator-darwin-amd64 codator-darwin-arm64 cdx cdl LICENSE > SHA256SUMS
+		sha256sum codator-linux-amd64 codator-linux-arm64 codator-darwin-amd64 codator-darwin-arm64 cdx cdl install.sh LICENSE > SHA256SUMS
 	else
-		shasum -a 256 codator-linux-amd64 codator-linux-arm64 codator-darwin-amd64 codator-darwin-arm64 cdx cdl LICENSE > SHA256SUMS
+		shasum -a 256 codator-linux-amd64 codator-linux-arm64 codator-darwin-amd64 codator-darwin-arm64 cdx cdl install.sh LICENSE > SHA256SUMS
 	fi
 )

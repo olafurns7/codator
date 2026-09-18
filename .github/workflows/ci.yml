@@ -24,10 +24,13 @@ jobs:
           - name: macOS Intel
             runner: macos-15-intel
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          go-version-file: go.mod
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.8'
+          cache: false
       - name: Check formatting
         run: test -z "$(gofmt -l .)"
       - name: Vet
@@ -48,3 +51,40 @@ jobs:
         run: |
           ./dist/codator-linux-amd64 --help
           (cd dist && sha256sum -c SHA256SUMS)
+
+  govulncheck:
+    name: govulncheck (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux amd64
+            goos: linux
+            goarch: amd64
+          - name: Linux arm64
+            goos: linux
+            goarch: arm64
+          - name: Darwin amd64
+            goos: darwin
+            goarch: amd64
+          - name: Darwin arm64
+            goos: darwin
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.8'
+          cache: false
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+      - name: Scan release target
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          "$(go env GOPATH)/bin/govulncheck" ./...

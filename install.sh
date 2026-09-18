@@ -1,6 +1,7 @@
 #!/bin/sh
 # Install a verified Codator release binary on Linux or macOS.
 set -eu
+umask 077
 
 repo=https://github.com/olafurns7/codator
 
@@ -15,9 +16,19 @@ shell_quote() {
 	printf "'"
 }
 
-for command in awk chmod cp curl mkdir mktemp mv rm sed uname; do
+for command in awk chmod cp curl gh mkdir mktemp mv rm sed uname; do
 	command -v "$command" >/dev/null 2>&1 || fail "required command not found: $command"
 done
+
+gh_version=$(gh version 2>/dev/null | awk 'NR == 1 { print $3; exit }') || fail "cannot determine GitHub CLI version"
+if ! printf '%s\n' "$gh_version" | awk -F. '
+NF != 3 { exit 1 }
+$1 !~ /^[0-9][0-9]*$/ || $2 !~ /^[0-9][0-9]*$/ || $3 !~ /^[0-9][0-9]*$/ { exit 1 }
+($1 > 2 || ($1 == 2 && ($2 > 86 || ($2 == 86 && $3 >= 0)))) { exit 0 }
+{ exit 1 }
+'; then
+	fail "GitHub CLI 2.86.0 or newer is required"
+fi
 
 if command -v sha256sum >/dev/null 2>&1; then
 	checksum_tool=sha256sum
@@ -41,16 +52,30 @@ esac
 
 version=${CODATOR_VERSION:-latest}
 case "$version" in
-	latest) download_base=$repo/releases/latest/download ;;
+	latest)
+		latest_url=$(curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --output /dev/null --write-out '%{url_effective}' "$repo/releases/latest") || fail "cannot resolve latest release"
+		latest_prefix=$repo/releases/tag/
+		case "$latest_url" in
+			"$latest_prefix"*) version=${latest_url#"$latest_prefix"} ;;
+			*) fail "latest release redirect is not a Codator tag" ;;
+		esac
+		;;
 	v)
 		fail "CODATOR_VERSION must be latest or a v-prefixed release tag"
 		;;
 	v*[!A-Za-z0-9._-]*)
 		fail "CODATOR_VERSION must be latest or a v-prefixed release tag"
 		;;
-	v*) download_base=$repo/releases/download/$version ;;
+	v*) ;;
 	*) fail "CODATOR_VERSION must be latest or a v-prefixed release tag" ;;
 esac
+case "$version" in
+	v) fail "latest release redirect is not a valid v-prefixed release tag" ;;
+	v*[!A-Za-z0-9._-]*) fail "latest release redirect is not a valid v-prefixed release tag" ;;
+	v*) ;;
+	*) fail "latest release redirect is not a valid v-prefixed release tag" ;;
+esac
+download_base=$repo/releases/download/$version
 
 if [ -n "${CODATOR_INSTALL_DIR:-}" ]; then
 	install_dir=$CODATOR_INSTALL_DIR
@@ -78,6 +103,7 @@ download() {
 
 download "$download_base/SHA256SUMS" "$tmp/SHA256SUMS" || fail "cannot download SHA256SUMS"
 download "$download_base/$asset" "$tmp/$asset" || fail "cannot download $asset"
+download "$download_base/attestations.jsonl" "$tmp/attestations.jsonl" || fail "cannot download attestations.jsonl"
 
 expected=$(awk -v name="$asset" '
 ($2 == name || $2 == "*" name) { count++; value = $1 }
@@ -92,6 +118,15 @@ case "$checksum_tool" in
 	sha256sum) (cd "$tmp" && sha256sum -c checksum) || fail "checksum verification failed for $asset" ;;
 	shasum) (cd "$tmp" && shasum -a 256 -c checksum) || fail "checksum verification failed for $asset" ;;
 esac
+
+# The exact certificate identity binds the hosted release workflow and tag.
+gh attestation verify "$tmp/$asset" \
+	--bundle "$tmp/attestations.jsonl" \
+	--repo olafurns7/codator \
+	--cert-identity "https://github.com/olafurns7/codator/.github/workflows/release.yml@refs/tags/$version" \
+	--source-ref "refs/tags/$version" \
+	--deny-self-hosted-runners \
+	--hostname github.com || fail "attestation verification failed for $asset"
 
 mkdir -p "$install_dir" || fail "cannot create $install_dir"
 destination=$install_dir/codator

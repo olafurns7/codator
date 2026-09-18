@@ -199,43 +199,130 @@ func TestCodexAppServerProbeUsesLocalProtocolFixture(t *testing.T) {
 	}
 	stub := filepath.Join(binDir, "codex")
 	cwdFile := filepath.Join(binDir, "probe-cwd")
-	baseURLFile := filepath.Join(binDir, "inherited-base-url")
+	envFile := filepath.Join(binDir, "probe-env")
 	argsFile := filepath.Join(binDir, "probe-args")
-	t.Setenv("CODATOR_PROBE_CWD_FILE", cwdFile)
-	t.Setenv("CODATOR_BASE_URL_FILE", baseURLFile)
-	t.Setenv("CODATOR_PROBE_ARGS_FILE", argsFile)
-	t.Setenv("OPENAI_BASE_URL", "https://attacker.example")
-	script := `#!/bin/sh
-pwd -P > "$CODATOR_PROBE_CWD_FILE"
-printf '%s\n' "${OPENAI_BASE_URL-}" > "$CODATOR_BASE_URL_FILE"
-printf '%s\n' "$@" > "$CODATOR_PROBE_ARGS_FILE"
+	for key, value := range map[string]string{
+		"HOME":                             filepath.Join(binDir, "home"),
+		"DBUS_SESSION_BUS_ADDRESS":         "unix:path=" + filepath.Join(binDir, "session-bus"),
+		"XDG_RUNTIME_DIR":                  filepath.Join(binDir, "runtime"),
+		"LANG":                             "synthetic-lang",
+		"LC_ALL":                           "synthetic-locale",
+		"LC_CTYPE":                         "synthetic-ctype",
+		"TMPDIR":                           filepath.Join(binDir, "tmpdir"),
+		"TMP":                              filepath.Join(binDir, "tmp"),
+		"TEMP":                             filepath.Join(binDir, "temp"),
+		"HTTP_PROXY":                       "http://upper-http-proxy.invalid",
+		"HTTPS_PROXY":                      "http://upper-https-proxy.invalid",
+		"ALL_PROXY":                        "socks5://upper-all-proxy.invalid",
+		"NO_PROXY":                         "upper-no-proxy.invalid",
+		"http_proxy":                       "http://lower-http-proxy.invalid",
+		"https_proxy":                      "http://lower-https-proxy.invalid",
+		"all_proxy":                        "socks5://lower-all-proxy.invalid",
+		"no_proxy":                         "lower-no-proxy.invalid",
+		"SSL_CERT_FILE":                    filepath.Join(binDir, "cert.pem"),
+		"CODEX_CA_CERTIFICATE":             filepath.Join(binDir, "codex-ca.pem"),
+		"SSL_CERT_DIR":                     filepath.Join(binDir, "certs"),
+		"NODE_EXTRA_CA_CERTS":              filepath.Join(binDir, "node-extra-ca.pem"),
+		"GITHUB_TOKEN":                     "synthetic-github-token",
+		"AWS_SECRET_ACCESS_KEY":            "synthetic-aws-secret",
+		"AWS_ACCESS_KEY_ID":                "synthetic-aws-access-key",
+		"OPENAI_API_KEY":                   "synthetic-openai-key",
+		"OPENAI_BASE_URL":                  "https://attacker.example",
+		"OPENAI_FEDERATION_RULE_ID":        "synthetic-openai-rule",
+		"OPENAI_IDENTITY_TOKEN_FILE":       filepath.Join(binDir, "identity-token"),
+		"CODEX_ACCESS_TOKEN":               "synthetic-codex-token",
+		"XDG_DATA_HOME":                    filepath.Join(binDir, "ambient-data"),
+		"NODE_OPTIONS":                     "--require=/tmp/attacker.js",
+		"LD_PRELOAD":                       filepath.Join(binDir, "attacker.so"),
+		"DYLD_INSERT_LIBRARIES":            filepath.Join(binDir, "attacker.dylib"),
+		"OPENAI_WORKLOAD_IDENTITY_CONTEXT": "synthetic-workload",
+	} {
+		t.Setenv(key, value)
+	}
+	ambientCodexHome := filepath.Join(binDir, "ambient-codex")
+	t.Setenv("CODEX_HOME", ambientCodexHome)
+	t.Setenv("CODEX_SQLITE_HOME", filepath.Join(binDir, "ambient-sqlite"))
+
+	writeStub := func(mode string) {
+		script := `#!/bin/sh
+pwd -P > __CWD_FILE__
+{
+  printf 'GITHUB_TOKEN=%s\n' "${GITHUB_TOKEN-<unset>}"
+  printf 'AWS_SECRET_ACCESS_KEY=%s\n' "${AWS_SECRET_ACCESS_KEY-<unset>}"
+  printf 'AWS_ACCESS_KEY_ID=%s\n' "${AWS_ACCESS_KEY_ID-<unset>}"
+  printf 'OPENAI_API_KEY=%s\n' "${OPENAI_API_KEY-<unset>}"
+  printf 'OPENAI_BASE_URL=%s\n' "${OPENAI_BASE_URL-<unset>}"
+  printf 'OPENAI_FEDERATION_RULE_ID=%s\n' "${OPENAI_FEDERATION_RULE_ID-<unset>}"
+  printf 'OPENAI_IDENTITY_TOKEN_FILE=%s\n' "${OPENAI_IDENTITY_TOKEN_FILE-<unset>}"
+  printf 'CODEX_ACCESS_TOKEN=%s\n' "${CODEX_ACCESS_TOKEN-<unset>}"
+  printf 'OPENAI_WORKLOAD_IDENTITY_CONTEXT=%s\n' "${OPENAI_WORKLOAD_IDENTITY_CONTEXT-<unset>}"
+  printf 'NODE_OPTIONS=%s\n' "${NODE_OPTIONS-<unset>}"
+  printf 'LD_PRELOAD=%s\n' "${LD_PRELOAD-<unset>}"
+  printf 'DYLD_INSERT_LIBRARIES=%s\n' "${DYLD_INSERT_LIBRARIES-<unset>}"
+  printf 'XDG_DATA_HOME=%s\n' "${XDG_DATA_HOME-<unset>}"
+  printf 'CODEX_HOME=%s\n' "${CODEX_HOME-<unset>}"
+  printf 'CODEX_SQLITE_HOME=%s\n' "${CODEX_SQLITE_HOME-<unset>}"
+  printf 'HOME=%s\n' "${HOME-<unset>}"
+  printf 'DBUS_SESSION_BUS_ADDRESS=%s\n' "${DBUS_SESSION_BUS_ADDRESS-<unset>}"
+  printf 'XDG_RUNTIME_DIR=%s\n' "${XDG_RUNTIME_DIR-<unset>}"
+  printf 'PATH=%s\n' "${PATH-<unset>}"
+  printf 'LANG=%s\n' "${LANG-<unset>}"
+  printf 'LC_ALL=%s\n' "${LC_ALL-<unset>}"
+  printf 'LC_CTYPE=%s\n' "${LC_CTYPE-<unset>}"
+  printf 'TMPDIR=%s\n' "${TMPDIR-<unset>}"
+  printf 'TMP=%s\n' "${TMP-<unset>}"
+  printf 'TEMP=%s\n' "${TEMP-<unset>}"
+  printf 'HTTP_PROXY=%s\n' "${HTTP_PROXY-<unset>}"
+  printf 'HTTPS_PROXY=%s\n' "${HTTPS_PROXY-<unset>}"
+  printf 'ALL_PROXY=%s\n' "${ALL_PROXY-<unset>}"
+  printf 'NO_PROXY=%s\n' "${NO_PROXY-<unset>}"
+  printf 'http_proxy=%s\n' "${http_proxy-<unset>}"
+  printf 'https_proxy=%s\n' "${https_proxy-<unset>}"
+  printf 'all_proxy=%s\n' "${all_proxy-<unset>}"
+  printf 'no_proxy=%s\n' "${no_proxy-<unset>}"
+  printf 'SSL_CERT_FILE=%s\n' "${SSL_CERT_FILE-<unset>}"
+  printf 'CODEX_CA_CERTIFICATE=%s\n' "${CODEX_CA_CERTIFICATE-<unset>}"
+  printf 'SSL_CERT_DIR=%s\n' "${SSL_CERT_DIR-<unset>}"
+  printf 'NODE_EXTRA_CA_CERTS=%s\n' "${NODE_EXTRA_CA_CERTS-<unset>}"
+} > __ENV_FILE__
+printf '%s\n' "$@" > __ARGS_FILE__
 while IFS= read -r line; do
   case "$line" in
     *'"method":"initialize"'*) printf '%s\n' '{"id":1,"result":{}}' ;;
     *'"method":"account/read"'*) printf '%s\n' '{"id":2,"result":{"account":{"type":"chatgpt","email":null,"planType":"plus"},"requiresOpenaiAuth":true}}' ;;
-	  *'"method":"account/rateLimits/read"'*)
-	    if [ "${CODATOR_RATE_LIMITS_ERROR-}" = 1 ]; then
-	      printf '%s\n' '{"id":3,"error":{"code":-1,"message":"fixture failure"}}'
-	    else
-	      response='{"id":3,"result":{"ordinaryUsageAllowed":true,"rateLimits":{"limitId":"codex","primary":{"usedPercent":20,"windowDurationMins":300,"resetsAt":4102444800},"secondary":{"usedPercent":60,"windowDurationMins":10080,"resetsAt":4102444800},"spendControlReached":false},"rateLimitsByLimitId":{"codex":{"limitId":"codex","primary":{"usedPercent":20,"windowDurationMins":300,"resetsAt":4102444800},"secondary":{"usedPercent":60,"windowDurationMins":10080,"resetsAt":4102444800},"spendControlReached":false}}}}'
-	      if [ "${CODATOR_SPEND_UNKNOWN-}" = 1 ]; then
-	        response=$(printf '%s\n' "$response" | sed 's/"spendControlReached":false/"spendControlReached":null/g')
-	      fi
-	      printf '%s\n' "$response"
-	    fi
-	    ;;
+    *'"method":"account/rateLimits/read"'*)
+      if [ "__MODE__" = error ]; then
+        printf '%s\n' '{"id":3,"error":{"code":-1,"message":"fixture failure"}}'
+      else
+        response='{"id":3,"result":{"ordinaryUsageAllowed":true,"rateLimits":{"limitId":"codex","primary":{"usedPercent":20,"windowDurationMins":300,"resetsAt":4102444800},"secondary":{"usedPercent":60,"windowDurationMins":10080,"resetsAt":4102444800},"spendControlReached":false},"rateLimitsByLimitId":{"codex":{"limitId":"codex","primary":{"usedPercent":20,"windowDurationMins":300,"resetsAt":4102444800},"secondary":{"usedPercent":60,"windowDurationMins":10080,"resetsAt":4102444800},"spendControlReached":false}}}}'
+        if [ "__MODE__" = unknown ]; then
+          response=$(printf '%s\n' "$response" | sed 's/"spendControlReached":false/"spendControlReached":null/g')
+        fi
+        printf '%s\n' "$response"
+      fi
+      ;;
   esac
 done
 `
-	if err := os.WriteFile(stub, []byte(script), 0700); err != nil {
-		t.Fatal(err)
+		script = strings.NewReplacer(
+			"__CWD_FILE__", shellQuote(cwdFile),
+			"__ENV_FILE__", shellQuote(envFile),
+			"__ARGS_FILE__", shellQuote(argsFile),
+			"__MODE__", mode,
+		).Replace(script)
+		if err := os.WriteFile(stub, []byte(script), 0700); err != nil {
+			t.Fatal(err)
+		}
 	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	parentPath := os.Getenv("PATH")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+parentPath)
+	writeStub("success")
 	quota, err := probeCodex(account)
 	if err != nil || !quota.Eligible || quota.Headroom != 40 {
 		t.Fatalf("quota=%+v err=%v", quota, err)
 	}
-	t.Setenv("CODATOR_RATE_LIMITS_ERROR", "1")
+	writeStub("error")
 	quota, err = probeCodex(account)
 	if err != nil || !quota.Subscription || quota.Known || quota.Eligible || quota.Reason == "" {
 		t.Fatalf("rate-limit failure lost verified identity: quota=%+v err=%v", quota, err)
@@ -243,8 +330,7 @@ done
 	if !canLaunchExplicit(quota) {
 		t.Fatalf("verified paid identity with unknown quota cannot launch explicitly: %+v", quota)
 	}
-	t.Setenv("CODATOR_RATE_LIMITS_ERROR", "")
-	t.Setenv("CODATOR_SPEND_UNKNOWN", "1")
+	writeStub("unknown")
 	quota, err = probeCodex(account)
 	if err != nil || !quota.Subscription || quota.Known || quota.Eligible || quota.Reason != "spend control status is unknown" {
 		t.Fatalf("unknown spend-control status was treated as eligible: quota=%+v err=%v", quota, err)
@@ -252,8 +338,50 @@ done
 	if got, err := os.ReadFile(cwdFile); err != nil || strings.TrimSpace(string(got)) != account.NativeDir {
 		t.Fatalf("probe cwd=%q err=%v, want %q", got, err, account.NativeDir)
 	}
-	if got, err := os.ReadFile(baseURLFile); err != nil || strings.TrimSpace(string(got)) != "" {
-		t.Fatalf("probe inherited OPENAI_BASE_URL: %q err=%v", got, err)
+	gotEnvBytes, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotEnv := envMap(strings.Split(strings.TrimSpace(string(gotEnvBytes)), "\n"))
+	for key, want := range map[string]string{
+		"CODEX_HOME":               account.NativeDir,
+		"CODEX_SQLITE_HOME":        account.NativeDir,
+		"HOME":                     filepath.Join(binDir, "home"),
+		"DBUS_SESSION_BUS_ADDRESS": "unix:path=" + filepath.Join(binDir, "session-bus"),
+		"XDG_RUNTIME_DIR":          filepath.Join(binDir, "runtime"),
+		"PATH":                     binDir + string(os.PathListSeparator) + parentPath,
+		"LANG":                     "synthetic-lang",
+		"LC_ALL":                   "synthetic-locale",
+		"LC_CTYPE":                 "synthetic-ctype",
+		"TMPDIR":                   filepath.Join(binDir, "tmpdir"),
+		"TMP":                      filepath.Join(binDir, "tmp"),
+		"TEMP":                     filepath.Join(binDir, "temp"),
+		"HTTP_PROXY":               "http://upper-http-proxy.invalid",
+		"HTTPS_PROXY":              "http://upper-https-proxy.invalid",
+		"ALL_PROXY":                "socks5://upper-all-proxy.invalid",
+		"NO_PROXY":                 "upper-no-proxy.invalid",
+		"http_proxy":               "http://lower-http-proxy.invalid",
+		"https_proxy":              "http://lower-https-proxy.invalid",
+		"all_proxy":                "socks5://lower-all-proxy.invalid",
+		"no_proxy":                 "lower-no-proxy.invalid",
+		"SSL_CERT_FILE":            filepath.Join(binDir, "cert.pem"),
+		"CODEX_CA_CERTIFICATE":     filepath.Join(binDir, "codex-ca.pem"),
+		"SSL_CERT_DIR":             filepath.Join(binDir, "certs"),
+		"NODE_EXTRA_CA_CERTS":      filepath.Join(binDir, "node-extra-ca.pem"),
+	} {
+		if gotEnv[key] != want {
+			t.Errorf("probe environment %s=%q, want %q", key, gotEnv[key], want)
+		}
+	}
+	for _, key := range []string{
+		"GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY", "AWS_ACCESS_KEY_ID", "OPENAI_API_KEY",
+		"OPENAI_BASE_URL", "OPENAI_FEDERATION_RULE_ID", "OPENAI_IDENTITY_TOKEN_FILE",
+		"CODEX_ACCESS_TOKEN", "OPENAI_WORKLOAD_IDENTITY_CONTEXT", "NODE_OPTIONS", "LD_PRELOAD",
+		"DYLD_INSERT_LIBRARIES", "XDG_DATA_HOME",
+	} {
+		if gotEnv[key] != "<unset>" {
+			t.Errorf("probe environment retained %s=%q", key, gotEnv[key])
+		}
 	}
 	gotArgs, err := os.ReadFile(argsFile)
 	if err != nil || !strings.Contains(string(gotArgs), `model_provider="openai"`) || !strings.Contains(string(gotArgs), `openai_base_url="https://chatgpt.com/backend-api/codex"`) {
