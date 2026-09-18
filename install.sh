@@ -1,9 +1,10 @@
 #!/bin/sh
-# Install a verified Codator release binary on Linux or macOS.
+# Install a Codator release binary on Linux or macOS.
 set -eu
 umask 077
 
 repo=https://github.com/olafurns7/codator
+repo_slug=olafurns7/codator
 
 fail() {
 	printf '%s\n' "codator installer: $*" >&2
@@ -16,19 +17,15 @@ shell_quote() {
 	printf "'"
 }
 
-for command in awk chmod cp curl gh mkdir mktemp mv rm sed uname; do
+verify_attestation=${CODATOR_VERIFY_ATTESTATION-0}
+case "$verify_attestation" in
+	0|1) ;;
+	*) fail "CODATOR_VERIFY_ATTESTATION must be 0 or 1" ;;
+esac
+
+for command in awk chmod cp curl mkdir mktemp mv rm sed uname; do
 	command -v "$command" >/dev/null 2>&1 || fail "required command not found: $command"
 done
-
-gh_version=$(gh version 2>/dev/null | awk 'NR == 1 { print $3; exit }') || fail "cannot determine GitHub CLI version"
-if ! printf '%s\n' "$gh_version" | awk -F. '
-NF != 3 { exit 1 }
-$1 !~ /^[0-9][0-9]*$/ || $2 !~ /^[0-9][0-9]*$/ || $3 !~ /^[0-9][0-9]*$/ { exit 1 }
-($1 > 2 || ($1 == 2 && ($2 > 86 || ($2 == 86 && $3 >= 0)))) { exit 0 }
-{ exit 1 }
-'; then
-	fail "GitHub CLI 2.86.0 or newer is required"
-fi
 
 if command -v sha256sum >/dev/null 2>&1; then
 	checksum_tool=sha256sum
@@ -36,6 +33,19 @@ elif command -v shasum >/dev/null 2>&1; then
 	checksum_tool=shasum
 else
 	fail "required command not found: sha256sum or shasum"
+fi
+
+if [ "$verify_attestation" = 1 ]; then
+	command -v gh >/dev/null 2>&1 || fail "required command not found: gh (needed when CODATOR_VERIFY_ATTESTATION=1)"
+	gh_version=$(gh version 2>/dev/null | awk 'NR == 1 { print $3; exit }') || fail "cannot determine GitHub CLI version"
+	if ! printf '%s\n' "$gh_version" | awk -F. '
+NF != 3 { exit 1 }
+$1 !~ /^[0-9][0-9]*$/ || $2 !~ /^[0-9][0-9]*$/ || $3 !~ /^[0-9][0-9]*$/ { exit 1 }
+($1 > 2 || ($1 == 2 && ($2 > 86 || ($2 == 86 && $3 >= 0)))) { exit 0 }
+{ exit 1 }
+'; then
+	fail "GitHub CLI 2.86.0 or newer is required when CODATOR_VERIFY_ATTESTATION=1"
+	fi
 fi
 
 case "$(uname -s)" in
@@ -103,7 +113,21 @@ download() {
 
 download "$download_base/SHA256SUMS" "$tmp/SHA256SUMS" || fail "cannot download SHA256SUMS"
 download "$download_base/$asset" "$tmp/$asset" || fail "cannot download $asset"
-download "$download_base/attestations.jsonl" "$tmp/attestations.jsonl" || fail "cannot download attestations.jsonl"
+if [ "$verify_attestation" = 1 ]; then
+	download "$download_base/attestations.jsonl" "$tmp/attestations.jsonl" || fail "cannot download attestations.jsonl"
+	[ -s "$tmp/attestations.jsonl" ] || fail "downloaded attestations.jsonl is empty"
+fi
+
+if [ "$verify_attestation" = 1 ]; then
+	# The exact certificate identity binds the hosted release workflow and tag.
+	gh attestation verify "$tmp/SHA256SUMS" \
+		--bundle "$tmp/attestations.jsonl" \
+		--repo "$repo_slug" \
+		--cert-identity "https://github.com/olafurns7/codator/.github/workflows/release.yml@refs/tags/$version" \
+		--source-ref "refs/tags/$version" \
+		--deny-self-hosted-runners \
+		--hostname github.com || fail "attestation verification failed for SHA256SUMS"
+fi
 
 expected=$(awk -v name="$asset" '
 ($2 == name || $2 == "*" name) { count++; value = $1 }
@@ -118,15 +142,6 @@ case "$checksum_tool" in
 	sha256sum) (cd "$tmp" && sha256sum -c checksum) || fail "checksum verification failed for $asset" ;;
 	shasum) (cd "$tmp" && shasum -a 256 -c checksum) || fail "checksum verification failed for $asset" ;;
 esac
-
-# The exact certificate identity binds the hosted release workflow and tag.
-gh attestation verify "$tmp/$asset" \
-	--bundle "$tmp/attestations.jsonl" \
-	--repo olafurns7/codator \
-	--cert-identity "https://github.com/olafurns7/codator/.github/workflows/release.yml@refs/tags/$version" \
-	--source-ref "refs/tags/$version" \
-	--deny-self-hosted-runners \
-	--hostname github.com || fail "attestation verification failed for $asset"
 
 mkdir -p "$install_dir" || fail "cannot create $install_dir"
 destination=$install_dir/codator
