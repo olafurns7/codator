@@ -16,7 +16,9 @@ curl -fsSL https://chatgpt.com/codex/install.sh | sh
 curl -fsSL https://claude.ai/install.sh | bash
 ~~~
 
-The Codator installer needs curl, GitHub CLI `gh` 2.86.0 or newer, standard POSIX shell utilities, and `sha256sum` (Linux) or `shasum -a 256` (macOS). It downloads the selected GitHub release asset, checksum manifest, and attestation bundle over HTTPS, verifies the checksum and the binary's GitHub artifact attestation against this repository's release workflow and tag, and atomically replaces the binary only after verification. The bundled `gh attestation verify --bundle ...` check does not need `gh login`; the invoked GitHub CLI may still read its normal local configuration. See the [GitHub attestation verification documentation](https://cli.github.com/manual/gh_attestation_verify).
+The default Codator installer needs curl, standard POSIX shell utilities, and `sha256sum` (Linux) or `shasum -a 256` (macOS). It resolves `latest` once when requested, downloads the selected GitHub release asset and `SHA256SUMS` over HTTPS, verifies the binary checksum, and atomically replaces the binary only after verification. It does not require GitHub CLI `gh`. A checksum manifest provides release consistency, not independent authenticity: this path explicitly trusts GitHub and the maintainer's release assets.
+
+Set `CODATOR_VERIFY_ATTESTATION=1` when you want the stronger optional provenance check. That mode requires GitHub CLI `gh` 2.86.0 or newer, downloads `attestations.jsonl`, and verifies the downloaded `SHA256SUMS` against this repository, the exact release workflow and tag, the matching source ref, GitHub's issuer, and hosted-runner policy before applying its unique binary checksum and staging it. `CODATOR_VERIFY_ATTESTATION` accepts only `0` or `1`; the default is `0`. The bundled `gh attestation verify --bundle ...` check does not need `gh login`; see the [GitHub attestation verification documentation](https://cli.github.com/manual/gh_attestation_verify).
 
 ## Install
 
@@ -25,47 +27,12 @@ The Codator installer needs curl, GitHub CLI `gh` 2.86.0 or newer, standard POSI
 set -eu
 umask 077
 repo=https://github.com/olafurns7/codator
+version=${CODATOR_VERSION:-v0.4.0}
 
 fail() {
   printf '%s\n' "codator bootstrap: $*" >&2
   exit 1
 }
-
-for command in awk curl gh mktemp rm; do
-  command -v "$command" >/dev/null 2>&1 || fail "required command not found: $command"
-done
-
-gh_version=$(gh version 2>/dev/null | awk 'NR == 1 { print $3; exit }') || fail "cannot determine GitHub CLI version"
-if ! printf '%s\n' "$gh_version" | awk -F. '
-NF != 3 { exit 1 }
-$1 !~ /^[0-9][0-9]*$/ || $2 !~ /^[0-9][0-9]*$/ || $3 !~ /^[0-9][0-9]*$/ { exit 1 }
-($1 > 2 || ($1 == 2 && ($2 > 86 || ($2 == 86 && $3 >= 0)))) { exit 0 }
-{ exit 1 }
-'; then
-  fail "GitHub CLI 2.86.0 or newer is required"
-fi
-
-version=${CODATOR_VERSION:-latest}
-case "$version" in
-  latest)
-    latest_url=$(curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --output /dev/null --write-out '%{url_effective}' "$repo/releases/latest") || fail "cannot resolve latest release"
-    latest_prefix=$repo/releases/tag/
-    case "$latest_url" in
-      "$latest_prefix"*) version=${latest_url#"$latest_prefix"} ;;
-      *) fail "latest release redirect is not a Codator tag" ;;
-    esac
-    ;;
-  v) fail "CODATOR_VERSION must be latest or a v-prefixed release tag" ;;
-  v*[!A-Za-z0-9._-]*) fail "CODATOR_VERSION must be latest or a v-prefixed release tag" ;;
-  v*) ;;
-  *) fail "CODATOR_VERSION must be latest or a v-prefixed release tag" ;;
-esac
-case "$version" in
-  v) fail "latest release redirect is not a valid v-prefixed release tag" ;;
-  v*[!A-Za-z0-9._-]*) fail "latest release redirect is not a valid v-prefixed release tag" ;;
-  v*) ;;
-  *) fail "latest release redirect is not a valid v-prefixed release tag" ;;
-esac
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/codator-bootstrap.XXXXXX") || fail "cannot create temporary directory"
 cleanup() {
@@ -74,32 +41,23 @@ cleanup() {
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
 
-download() {
-  curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --output "$2" "$1"
-}
-
-download "$repo/releases/download/$version/install.sh" "$tmp/install.sh" || fail "cannot download install.sh"
-download "$repo/releases/download/$version/attestations.jsonl" "$tmp/attestations.jsonl" || fail "cannot download attestations.jsonl"
-# The exact certificate identity binds the hosted release workflow and tag.
-gh attestation verify "$tmp/install.sh" \
-  --bundle "$tmp/attestations.jsonl" \
-  --repo olafurns7/codator \
-  --cert-identity "https://github.com/olafurns7/codator/.github/workflows/release.yml@refs/tags/$version" \
-  --source-ref "refs/tags/$version" \
-  --deny-self-hosted-runners \
-  --hostname github.com || fail "attestation verification failed for install.sh"
+if ! curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+  --output "$tmp/install.sh" "$repo/releases/download/$version/install.sh"; then
+  fail "cannot download install.sh"
+fi
+[ -s "$tmp/install.sh" ] || fail "downloaded install.sh is empty"
 
 CODATOR_VERSION="$version" sh "$tmp/install.sh"
 )
 ~~~
 
-The snippet is self-contained and resolves `latest` once, then verifies the complete installer and its bundle from the same tag before running it. Leave `CODATOR_VERSION` unset for the latest tag, or set it to a real signed `v...` release tag before running the snippet. Set `CODATOR_INSTALL_DIR` before the snippet to choose another destination, for example `export CODATOR_INSTALL_DIR="$HOME/bin"`. By default this installs codator in `~/.local/bin`. If that directory is not already in PATH, the installer prints the exact export to add to `~/.zshrc` or `~/.bashrc`; reload it, for example:
+This bootstrap downloads the complete versioned installer into a private temporary directory, then executes that downloaded file; it never pipes mutable `main` into a shell. It uses `v0.4.0` unless `CODATOR_VERSION` is set to another concrete release tag. Set `CODATOR_INSTALL_DIR` before the snippet to choose another destination, for example `export CODATOR_INSTALL_DIR="$HOME/bin"`. By default this installs codator in `~/.local/bin`. If that directory is not already in PATH, the installer prints the exact export to add to `~/.zshrc` or `~/.bashrc`; reload it, for example:
 
 ~~~sh
 . ~/.zshrc
 ~~~
 
-After a verified install, the installer runs `codator doctor` for each native CLI it finds, when the installed release supports it. Older releases get a short notice instead. A missing optional provider does not block installation. If a prerequisite needs attention, the binary is still installed and the installer prints the doctor result; fix it before that provider is launched. If neither native CLI is installed, it prints the native-install next step. The installer never uses `sudo` or changes shell, security, or profile settings. Releases without `attestations.jsonl` fail closed; this includes v0.3.2 and earlier, which predate provenance bundles. They require migration to a later signed release. Until one is available, the supported fallback is to build from a reviewed source checkout with the documented Go toolchain rather than downloading an unverified binary.
+After installation, the installer runs `codator doctor` for each native CLI it finds, when the installed release supports it. Older releases get a short notice instead. A missing optional provider does not block installation. If a prerequisite needs attention, the binary is still installed and the installer prints the doctor result; fix it before that provider is launched. If neither native CLI is installed, it prints the native-install next step. The installer never uses `sudo` or changes shell, security, or profile settings. In opt-in mode, a missing bundle, unsupported verifier, checksum mismatch, or any attestation error fails closed before staging; checksum-only mode does not require a bundle.
 
 For Codex on Linux, install the distribution `bubblewrap` package so `bwrap` is on PATH. After Codator is installed, check the native CLI you plan to use before login or launch:
 
@@ -210,15 +168,15 @@ Build from source with Go 1.26.8 or newer, the minimum supported patched toolcha
 go build -trimpath -o codator .
 ~~~
 
-Maintainers build four release assets and their SHA256SUMS manifest with:
+Maintainers build the four binaries, `cdx`, `cdl`, `install.sh`, `LICENSE`, and their `SHA256SUMS` manifest locally with:
 
 ~~~sh
 scripts/release.sh
 ~~~
 
-Pushing a v* tag runs checks, builds those assets, and publishes the GitHub release. Go 1.26 is the last Go series supported on macOS 12. Before Go 1.26 support ends, move macOS 12 users to a supported Go branch or raise the project's macOS minimum; do not treat an indefinitely frozen 1.26 toolchain as the update policy. Do not publish a tag until the release checks have passed.
+The maintainer release sequence is documented in [RELEASING.md](docs/RELEASING.md). It uses local gates and builds at the exact annotated `v0.4.0` tag, uploads a draft GitHub release, then manually invokes the one-job signing workflow with the local `SHA256SUMS` hash. The workflow signs only `SHA256SUMS`, which authenticates the eight payloads through their hashes, and adds only `attestations.jsonl`; it never builds, tests, or publishes. Verify the returned manifest attestation locally before publishing the draft. Go 1.26 is the last Go series supported on macOS 12. Before Go 1.26 support ends, move macOS 12 users to a supported Go branch or raise the project's macOS minimum; do not treat an indefinitely frozen 1.26 toolchain as the update policy.
 
-The assets are `codator-linux-amd64`, `codator-linux-arm64`, `codator-darwin-amd64`, and `codator-darwin-arm64`. Releases also include optional `cdx` and `cdl` helper downloads; install those manually only if wanted. The binary installer does not install shortcuts. Native macOS CI uses fake native adapters; it does not verify a Claude or Codex account flow on macOS.
+The release payloads are `codator-linux-amd64`, `codator-linux-arm64`, `codator-darwin-amd64`, `codator-darwin-arm64`, `cdx`, `cdl`, `install.sh`, `LICENSE`, and `SHA256SUMS`. The binary installer does not install shortcuts. Native macOS CI uses fake native adapters; it does not verify a Claude or Codex account flow on macOS.
 
 See the [security policy and reporting instructions](SECURITY.md).
 

@@ -97,6 +97,13 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 printf '%s\n' "$url" >> "$FAKE_CURL_LOG"
+case "${FAKE_CURL_MODE:-}" in
+  network) exit 22 ;;
+  partial)
+    printf '%s\n' '#!/bin/sh' 'printf "%s\\n" executed > "$README_INSTALLER_MARKER"' > "$out"
+    exit 22
+    ;;
+esac
 if [ "$url" = "https://github.com/olafurns7/codator/releases/latest" ]; then
   [ "$out" = /dev/null ] || exit 22
   [ "$write_out" = '%{url_effective}' ] || exit 22
@@ -109,11 +116,18 @@ if [ "$url" = "https://github.com/olafurns7/codator/releases/latest" ]; then
 fi
 case "${FAKE_CURL_MODE:-}" in
   network) exit 22 ;;
+  partial)
+    printf '%s\n' '#!/bin/sh' 'printf "%s\\n" executed > "$README_INSTALLER_MARKER"' > "$out"
+    exit 22
+    ;;
   checksum)
     case "$url" in */codator-*) printf '%s\n' corrupt > "$out"; exit 0 ;; esac
     ;;
   tampered)
     case "$url" in */SHA256SUMS) cp "$FAKE_TAMPERED_SUMS" "$out"; exit 0 ;; esac
+    case "$url" in */codator-*) cp "$FAKE_TAMPERED_ASSET" "$out"; exit 0 ;; esac
+    ;;
+  tampered-asset)
     case "$url" in */codator-*) cp "$FAKE_TAMPERED_ASSET" "$out"; exit 0 ;; esac
     ;;
   missingbundle)
@@ -138,7 +152,7 @@ fi
 [ "${FAKE_GH_MODE:-}" != reject ] || exit 42
 [ "$#" -eq 14 ] || exit 43
 [ "$1" = attestation ] && [ "$2" = verify ] || exit 44
-case "$3" in */codator-*|*/install.sh) ;; *) exit 45 ;; esac
+case "$3" in */SHA256SUMS) ;; *) exit 45 ;; esac
 [ "$4" = --bundle ] || exit 46
 case "$5" in */attestations.jsonl) ;; *) exit 47 ;; esac
 [ "$6" = --repo ] || exit 48
@@ -193,20 +207,21 @@ esac
 			path = extraPath
 		}
 		env := buildEnv(os.Environ(), nil, map[string]string{
-			"CODATOR_INSTALL_DIR":  installDir,
-			"CODATOR_VERSION":      "v9.9.9",
-			"FAKE_BINARY_LOG":      filepath.Join(root, name+".binary-log"),
-			"FAKE_CURL_LOG":        curlLog,
-			"FAKE_CURL_MODE":       "",
-			"FAKE_DOCTOR_LOG":      filepath.Join(root, name+".doctor-log"),
-			"FAKE_GH_EXPECTED_TAG": "v9.9.9",
-			"FAKE_GH_LOG":          ghLog,
-			"FAKE_GH_MODE":         "",
-			"FAKE_RELEASE_FIXTURE": fixture,
-			"FAKE_UNAME_M":         "x86_64",
-			"FAKE_UNAME_S":         "Linux",
-			"HOME":                 filepath.Join(root, "home"),
-			"PATH":                 path,
+			"CODATOR_INSTALL_DIR":        installDir,
+			"CODATOR_VERIFY_ATTESTATION": "0",
+			"CODATOR_VERSION":            "v9.9.9",
+			"FAKE_BINARY_LOG":            filepath.Join(root, name+".binary-log"),
+			"FAKE_CURL_LOG":              curlLog,
+			"FAKE_CURL_MODE":             "",
+			"FAKE_DOCTOR_LOG":            filepath.Join(root, name+".doctor-log"),
+			"FAKE_GH_EXPECTED_TAG":       "v9.9.9",
+			"FAKE_GH_LOG":                ghLog,
+			"FAKE_GH_MODE":               "",
+			"FAKE_RELEASE_FIXTURE":       fixture,
+			"FAKE_UNAME_M":               "x86_64",
+			"FAKE_UNAME_S":               "Linux",
+			"HOME":                       filepath.Join(root, "home"),
+			"PATH":                       path,
 		})
 		for key, value := range extra {
 			env = buildEnv(env, nil, map[string]string{key: value})
@@ -223,19 +238,20 @@ esac
 	runPiped := func(t *testing.T, dir string) (string, error) {
 		t.Helper()
 		env := buildEnv(os.Environ(), []string{"CODATOR_VERSION"}, map[string]string{
-			"CODATOR_VERSION":      "v9.9.9",
-			"FAKE_BINARY_LOG":      filepath.Join(root, "piped.binary-log"),
-			"FAKE_CURL_LOG":        filepath.Join(root, "piped.curl-log"),
-			"FAKE_CURL_MODE":       "",
-			"FAKE_DOCTOR_LOG":      filepath.Join(root, "piped.doctor-log"),
-			"FAKE_GH_EXPECTED_TAG": "v9.9.9",
-			"FAKE_GH_LOG":          filepath.Join(root, "piped.gh-log"),
-			"FAKE_GH_MODE":         "",
-			"FAKE_RELEASE_FIXTURE": fixture,
-			"FAKE_UNAME_M":         "x86_64",
-			"FAKE_UNAME_S":         "Linux",
-			"HOME":                 filepath.Join(root, "home"),
-			"PATH":                 fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
+			"CODATOR_VERSION":            "v9.9.9",
+			"CODATOR_VERIFY_ATTESTATION": "0",
+			"FAKE_BINARY_LOG":            filepath.Join(root, "piped.binary-log"),
+			"FAKE_CURL_LOG":              filepath.Join(root, "piped.curl-log"),
+			"FAKE_CURL_MODE":             "",
+			"FAKE_DOCTOR_LOG":            filepath.Join(root, "piped.doctor-log"),
+			"FAKE_GH_EXPECTED_TAG":       "v9.9.9",
+			"FAKE_GH_LOG":                filepath.Join(root, "piped.gh-log"),
+			"FAKE_GH_MODE":               "",
+			"FAKE_RELEASE_FIXTURE":       fixture,
+			"FAKE_UNAME_M":               "x86_64",
+			"FAKE_UNAME_S":               "Linux",
+			"HOME":                       filepath.Join(root, "home"),
+			"PATH":                       fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
 		})
 		wd, err := os.Getwd()
 		if err != nil {
@@ -260,9 +276,9 @@ esac
 		if err != nil || string(got) != string(assets["codator-linux-amd64"]) {
 			t.Fatalf("installed binary = %q, err %v", got, err)
 		}
-		assertAttestationArgs(t, filepath.Join(root, strings.ReplaceAll(t.Name(), "/", "_")+".gh-log"), "v9.9.9", 1)
+		assertNoGitHubCLICall(t, filepath.Join(root, strings.ReplaceAll(t.Name(), "/", "_")+".gh-log"))
 		log, err := os.ReadFile(filepath.Join(root, strings.ReplaceAll(t.Name(), "/", "_")+".curl-log"))
-		if err != nil || !strings.Contains(string(log), "/download/v9.9.9/codator-linux-amd64") || !strings.Contains(string(log), "/download/v9.9.9/attestations.jsonl") {
+		if err != nil || !strings.Contains(string(log), "/download/v9.9.9/codator-linux-amd64") || !strings.Contains(string(log), "/download/v9.9.9/SHA256SUMS") || strings.Contains(string(log), "/download/v9.9.9/attestations.jsonl") {
 			t.Fatalf("pinned release URL was not requested: %q, err %v", log, err)
 		}
 		var pathCommand string
@@ -285,12 +301,50 @@ esac
 		if log, err := os.ReadFile(filepath.Join(root, "piped.doctor-log")); err != nil || string(log) != "doctor codex\ndoctor claude\n" {
 			t.Fatalf("piped installer did not run doctor: %q err=%v", log, err)
 		}
-		assertAttestationArgs(t, filepath.Join(root, "piped.gh-log"), "v9.9.9", 1)
+		assertNoGitHubCLICall(t, filepath.Join(root, "piped.gh-log"))
 		piped, err := os.ReadFile(filepath.Join(pipedDir, "codator"))
 		if err != nil || string(piped) != string(assets["codator-linux-amd64"]) {
 			t.Fatalf("piped installed binary = %q, err %v", piped, err)
 		}
 	})
+
+	t.Run("opt-in verifies the signed manifest before install", func(t *testing.T) {
+		dir := filepath.Join(root, "opt-in install")
+		output, err := run(t, dir, map[string]string{"CODATOR_VERIFY_ATTESTATION": "1"}, false)
+		if err != nil {
+			t.Fatalf("opt-in installer failed: %v\n%s", err, output)
+		}
+		assertAttestationArgs(t, filepath.Join(root, strings.ReplaceAll(t.Name(), "/", "_")+".gh-log"), "v9.9.9", 1)
+		log, readErr := os.ReadFile(filepath.Join(root, strings.ReplaceAll(t.Name(), "/", "_")+".curl-log"))
+		if readErr != nil || !strings.Contains(string(log), "/download/v9.9.9/attestations.jsonl") {
+			t.Fatalf("opt-in did not download the attestation bundle: %q, err %v", log, readErr)
+		}
+	})
+
+	t.Run("default checksum install succeeds without gh", func(t *testing.T) {
+		dir := filepath.Join(root, "default without gh")
+		output, err := run(t, dir, map[string]string{"CODATOR_TEST_PATH": missingVerifierBin}, false)
+		if err != nil {
+			t.Fatalf("default installer unexpectedly needs gh: %v\n%s", err, output)
+		}
+		assertNoGitHubCLICall(t, filepath.Join(root, strings.ReplaceAll(t.Name(), "/", "_")+".gh-log"))
+		if _, readErr := os.Stat(filepath.Join(dir, "codator")); readErr != nil {
+			t.Fatalf("default installer did not install without gh: %v", readErr)
+		}
+	})
+
+	for _, value := range []string{"", "2"} {
+		t.Run("invalid attestation setting "+value, func(t *testing.T) {
+			dir := filepath.Join(root, "invalid-attestation-"+strings.ReplaceAll(value, "", "empty"))
+			output, err := run(t, dir, map[string]string{"CODATOR_VERIFY_ATTESTATION": value}, false)
+			if err == nil || !strings.Contains(output, "CODATOR_VERIFY_ATTESTATION must be 0 or 1") {
+				t.Fatalf("invalid setting result=%v output=%q", err, output)
+			}
+			if _, statErr := os.Stat(dir); !os.IsNotExist(statErr) {
+				t.Fatalf("invalid setting touched install directory: %v", statErr)
+			}
+		})
+	}
 
 	for _, target := range targets {
 		t.Run("maps "+target.name, func(t *testing.T) {
@@ -324,10 +378,10 @@ esac
 		if got := strings.Count(string(log), "https://github.com/olafurns7/codator/releases/latest\n"); got != 1 {
 			t.Fatalf("latest redirect requests=%d, log=%q", got, log)
 		}
-		if strings.Contains(string(log), "/releases/latest/download") || !strings.Contains(string(log), "/download/v9.9.9/SHA256SUMS") || !strings.Contains(string(log), "/download/v9.9.9/attestations.jsonl") {
+		if strings.Contains(string(log), "/releases/latest/download") || !strings.Contains(string(log), "/download/v9.9.9/SHA256SUMS") || strings.Contains(string(log), "/download/v9.9.9/attestations.jsonl") {
 			t.Fatalf("latest did not use one resolved tag: %q", log)
 		}
-		assertAttestationArgs(t, filepath.Join(root, name+".gh-log"), "v9.9.9", 1)
+		assertNoGitHubCLICall(t, filepath.Join(root, name+".gh-log"))
 	})
 
 	t.Run("one installed provider is sufficient even when doctor needs attention", func(t *testing.T) {
@@ -361,7 +415,7 @@ esac
 		if !strings.Contains(output, "does not support doctor; skipping prerequisite checks") || strings.Contains(output, "Checking codex prerequisites") {
 			t.Fatalf("legacy installer output=%q", output)
 		}
-		assertAttestationArgs(t, filepath.Join(root, strings.ReplaceAll(t.Name(), "/", "_")+".gh-log"), "v0.2.0", 1)
+		assertNoGitHubCLICall(t, filepath.Join(root, strings.ReplaceAll(t.Name(), "/", "_")+".gh-log"))
 		got, err := os.ReadFile(filepath.Join(dir, "codator"))
 		if err != nil || string(got) != string(legacyAsset) {
 			t.Fatalf("legacy installed binary=%q err=%v", got, err)
@@ -479,13 +533,43 @@ esac
 			t.Fatal(err)
 		}
 		output, err := run(t, dir, map[string]string{
-			"FAKE_CURL_MODE":      "tampered",
-			"FAKE_GH_MODE":        "reject",
-			"FAKE_TAMPERED_ASSET": tamperedPath,
-			"FAKE_TAMPERED_SUMS":  tamperedSumsPath,
+			"FAKE_CURL_MODE":             "tampered",
+			"CODATOR_VERIFY_ATTESTATION": "1",
+			"FAKE_GH_MODE":               "reject",
+			"FAKE_TAMPERED_ASSET":        tamperedPath,
+			"FAKE_TAMPERED_SUMS":         tamperedSumsPath,
 		}, false)
 		if err == nil {
 			t.Fatalf("tampered installer unexpectedly succeeded: %s", output)
+		}
+		got, readErr := os.ReadFile(filepath.Join(dir, "codator"))
+		if readErr != nil || string(got) != string(old) {
+			t.Fatalf("existing binary changed to %q, err %v", got, readErr)
+		}
+		assertNoBinaryExecution(t, filepath.Join(root, strings.ReplaceAll(t.Name(), "/", "_")+".binary-log"))
+	})
+
+	t.Run("tampered binary fails the signed manifest checksum", func(t *testing.T) {
+		tamperedAsset := []byte("#!/bin/sh\nprintf 'attacker ran\\n' >> \"$FAKE_BINARY_LOG\"\n")
+		tamperedPath := filepath.Join(root, "tampered-signed-asset")
+		if err := os.WriteFile(tamperedPath, tamperedAsset, 0700); err != nil {
+			t.Fatal(err)
+		}
+		dir := filepath.Join(root, "tampered signed destination")
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		old := []byte("old binary\n")
+		if err := os.WriteFile(filepath.Join(dir, "codator"), old, 0700); err != nil {
+			t.Fatal(err)
+		}
+		output, err := run(t, dir, map[string]string{
+			"CODATOR_VERIFY_ATTESTATION": "1",
+			"FAKE_CURL_MODE":             "tampered-asset",
+			"FAKE_TAMPERED_ASSET":        tamperedPath,
+		}, false)
+		if err == nil {
+			t.Fatalf("tampered binary unexpectedly passed signed checksum: %s", output)
 		}
 		got, readErr := os.ReadFile(filepath.Join(dir, "codator"))
 		if readErr != nil || string(got) != string(old) {
@@ -498,9 +582,9 @@ esac
 		name  string
 		extra map[string]string
 	}{
-		{"missing bundle", map[string]string{"FAKE_CURL_MODE": "missingbundle"}},
-		{"unsigned bundle", map[string]string{"FAKE_GH_MODE": "reject"}},
-		{"unsupported verifier", map[string]string{"FAKE_GH_VERSION": "2.85.0"}},
+		{"missing bundle", map[string]string{"CODATOR_VERIFY_ATTESTATION": "1", "FAKE_CURL_MODE": "missingbundle"}},
+		{"unsigned bundle", map[string]string{"CODATOR_VERIFY_ATTESTATION": "1", "FAKE_GH_MODE": "reject"}},
+		{"unsupported verifier", map[string]string{"CODATOR_VERIFY_ATTESTATION": "1", "FAKE_GH_VERSION": "2.85.0"}},
 	} {
 		t.Run(test.name+" preserves old destination and executes nothing", func(t *testing.T) {
 			dir := filepath.Join(root, strings.ReplaceAll(test.name, " ", "-")+" destination")
@@ -523,7 +607,19 @@ esac
 		})
 	}
 
-	t.Run("release without provenance bundle fails closed", func(t *testing.T) {
+	t.Run("default checksum mode accepts a release without provenance bundle", func(t *testing.T) {
+		dir := filepath.Join(root, "unsigned default release")
+		output, err := run(t, dir, map[string]string{
+			"CODATOR_VERSION":      "v0.3.2",
+			"FAKE_RELEASE_FIXTURE": unsignedFixture,
+		}, false)
+		if err != nil {
+			t.Fatalf("default checksum install unexpectedly failed without a bundle: %v\n%s", err, output)
+		}
+		assertNoGitHubCLICall(t, filepath.Join(root, strings.ReplaceAll(t.Name(), "/", "_")+".gh-log"))
+	})
+
+	t.Run("opt-in release without provenance bundle fails closed", func(t *testing.T) {
 		dir := filepath.Join(root, "unsigned release")
 		if err := os.MkdirAll(dir, 0700); err != nil {
 			t.Fatal(err)
@@ -533,9 +629,10 @@ esac
 			t.Fatal(err)
 		}
 		output, err := run(t, dir, map[string]string{
-			"CODATOR_VERSION":      "v0.3.2",
-			"FAKE_GH_EXPECTED_TAG": "v0.3.2",
-			"FAKE_RELEASE_FIXTURE": unsignedFixture,
+			"CODATOR_VERSION":            "v0.3.2",
+			"CODATOR_VERIFY_ATTESTATION": "1",
+			"FAKE_GH_EXPECTED_TAG":       "v0.3.2",
+			"FAKE_RELEASE_FIXTURE":       unsignedFixture,
 		}, false)
 		if err == nil {
 			t.Fatalf("unsigned release unexpectedly succeeded: %s", output)
@@ -551,9 +648,9 @@ esac
 		name  string
 		extra map[string]string
 	}{
-		{"wrong repository", map[string]string{"FAKE_GH_EXPECTED_REPO": "attacker/repo"}},
-		{"wrong workflow", map[string]string{"FAKE_GH_EXPECTED_CERT_IDENTITY": "https://github.com/olafurns7/codator/.github/workflows/other.yml@refs/tags/v9.9.9"}},
-		{"wrong tag", map[string]string{"FAKE_GH_EXPECTED_TAG": "v8.8.8"}},
+		{"wrong repository", map[string]string{"CODATOR_VERIFY_ATTESTATION": "1", "FAKE_GH_EXPECTED_REPO": "attacker/repo"}},
+		{"wrong workflow", map[string]string{"CODATOR_VERIFY_ATTESTATION": "1", "FAKE_GH_EXPECTED_CERT_IDENTITY": "https://github.com/olafurns7/codator/.github/workflows/other.yml@refs/tags/v9.9.9"}},
+		{"wrong tag", map[string]string{"CODATOR_VERIFY_ATTESTATION": "1", "FAKE_GH_EXPECTED_TAG": "v8.8.8"}},
 	} {
 		t.Run("wrong attestation "+test.name+" is rejected", func(t *testing.T) {
 			dir := filepath.Join(root, "wrong-"+strings.ReplaceAll(test.name, " ", "-")+" destination")
@@ -578,7 +675,7 @@ esac
 
 	t.Run("missing verifier fails before release download", func(t *testing.T) {
 		dir := filepath.Join(root, "missing verifier")
-		output, err := run(t, dir, map[string]string{"CODATOR_TEST_PATH": missingVerifierBin}, false)
+		output, err := run(t, dir, map[string]string{"CODATOR_TEST_PATH": missingVerifierBin, "CODATOR_VERIFY_ATTESTATION": "1"}, false)
 		if err == nil || !strings.Contains(output, "required command not found: gh") {
 			t.Fatalf("missing verifier error=%v output=%q", err, output)
 		}
@@ -642,7 +739,8 @@ func TestREADMEBootstrap(t *testing.T) {
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256(asset)
-	if err := os.WriteFile(filepath.Join(fixture, "SHA256SUMS"), []byte(fmt.Sprintf("%x  codator-linux-amd64\n", sum)), 0600); err != nil {
+	installSum := sha256.Sum256(installScript)
+	if err := os.WriteFile(filepath.Join(fixture, "SHA256SUMS"), []byte(fmt.Sprintf("%x  install.sh\n%x  codator-linux-amd64\n", installSum, sum)), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(fixture, "attestations.jsonl"), []byte("signed bootstrap bundle\n"), 0600); err != nil {
@@ -672,6 +770,13 @@ if [ "$url" = "https://github.com/olafurns7/codator/releases/latest" ]; then
   printf '%s' 'https://github.com/olafurns7/codator/releases/tag/v9.9.9'
   exit 0
 fi
+case "${FAKE_CURL_MODE:-}" in
+  network) exit 22 ;;
+  partial)
+    printf '%s\n' '#!/bin/sh' 'printf "%s\\n" executed > "$README_INSTALLER_MARKER"' > "$out"
+    exit 22
+    ;;
+esac
 asset=${url##*/}
 case "$asset" in
   install.sh|attestations.jsonl|SHA256SUMS|codator-linux-amd64) cp "$FAKE_RELEASE_FIXTURE/$asset" "$out" ;;
@@ -688,7 +793,7 @@ fi
 [ "${FAKE_GH_MODE:-}" != reject ] || exit 42
 [ "$#" -eq 14 ] || exit 43
 [ "$1" = attestation ] && [ "$2" = verify ] || exit 44
-case "$3" in */codator-*|*/install.sh) ;; *) exit 45 ;; esac
+case "$3" in */SHA256SUMS) ;; *) exit 45 ;; esac
 [ "$4" = --bundle ] || exit 46
 case "$5" in */attestations.jsonl) ;; *) exit 47 ;; esac
 [ "$6" = --repo ] && [ "$7" = olafurns7/codator ] || exit 48
@@ -706,6 +811,11 @@ esac
 `)
 	for _, native := range []string{"codex", "claude"} {
 		writeInstallFixture(t, filepath.Join(fakeBin, native), "#!/bin/sh\nexit 99\n")
+	}
+
+	readmePath := makeIsolatedInstallPath(t, root, fakeBin)
+	if err := os.Remove(filepath.Join(readmePath, "gh")); err != nil {
+		t.Fatal(err)
 	}
 
 	readme, err := os.ReadFile("README.md")
@@ -733,8 +843,9 @@ esac
 		"FAKE_GH_LOG":          filepath.Join(root, name+".gh-log"),
 		"FAKE_GH_MODE":         "",
 		"FAKE_RELEASE_FIXTURE": fixture,
+		"FAKE_SHASUM_LOG":      filepath.Join(root, name+".shasum-log"),
 		"HOME":                 filepath.Join(root, "home"),
-		"PATH":                 fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"PATH":                 readmePath,
 	})
 	cmd := exec.Command("/bin/sh", "-c", bootstrap)
 	cmd.Env = env
@@ -750,42 +861,154 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(string(log), "releases/latest\n") != 1 || strings.Contains(string(log), "/releases/latest/download") || !strings.Contains(string(log), "/download/v9.9.9/install.sh") || !strings.Contains(string(log), "/download/v9.9.9/attestations.jsonl") || !strings.Contains(string(log), "/download/v9.9.9/codator-linux-amd64") {
+	if strings.Contains(string(log), "releases/latest") || strings.Contains(string(log), "/releases/latest/download") || !strings.Contains(string(log), "/download/v0.4.0/install.sh") || strings.Contains(string(log), "/download/v0.4.0/attestations.jsonl") || !strings.Contains(string(log), "/download/v0.4.0/SHA256SUMS") || !strings.Contains(string(log), "/download/v0.4.0/codator-linux-amd64") {
 		t.Fatalf("README bootstrap mixed release URLs: %q", log)
 	}
-	assertAttestationArgs(t, filepath.Join(root, name+".gh-log"), "v9.9.9", 2)
+	assertNoGitHubCLICall(t, filepath.Join(root, name+".gh-log"))
 
-	t.Run("rejected installer is never executed", func(t *testing.T) {
-		marker := filepath.Join(root, "rejected-installer-executed")
+	t.Run("optional security bootstrap verifies the manifest chain", func(t *testing.T) {
+		security, err := os.ReadFile("SECURITY.md")
+		if err != nil {
+			t.Fatal(err)
+		}
+		securityText := string(security)
+		start := strings.Index(securityText, "~~~sh\n(\nset -eu\numask 077\n")
+		if start < 0 {
+			t.Fatal("SECURITY bootstrap code block not found")
+		}
+		start += len("~~~sh\n")
+		end := strings.Index(securityText[start:], "\n~~~")
+		if end < 0 {
+			t.Fatal("SECURITY bootstrap code block is not closed")
+		}
+		bootstrap := securityText[start : start+end]
+		secureDir := filepath.Join(root, "secure install")
+		secureEnv := buildEnv(os.Environ(), []string{"CODATOR_INSTALL_DIR"}, map[string]string{
+			"CODATOR_INSTALL_DIR":  secureDir,
+			"CODATOR_VERSION":      "v9.9.9",
+			"FAKE_BINARY_LOG":      filepath.Join(root, "secure.binary-log"),
+			"FAKE_CURL_LOG":        filepath.Join(root, "secure.curl-log"),
+			"FAKE_CURL_MODE":       "",
+			"FAKE_GH_EXPECTED_TAG": "v9.9.9",
+			"FAKE_GH_LOG":          filepath.Join(root, "secure.gh-log"),
+			"FAKE_GH_MODE":         "",
+			"FAKE_RELEASE_FIXTURE": fixture,
+			"HOME":                 filepath.Join(root, "secure-home"),
+			"PATH":                 fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
+		})
+		cmd := exec.Command("/bin/sh", "-c", bootstrap)
+		cmd.Env = secureEnv
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("optional security bootstrap failed: %v\n%s", err, output)
+		}
+		if _, err := os.Stat(filepath.Join(secureDir, "codator")); err != nil {
+			t.Fatalf("optional security bootstrap did not install: %v", err)
+		}
+		assertAttestationArgs(t, filepath.Join(root, "secure.gh-log"), "v9.9.9", 2)
+
+		t.Run("manifest attestation rejection does not execute installer", func(t *testing.T) {
+			marker := filepath.Join(root, "secure-rejected-installer-executed")
+			markerInstaller := []byte("#!/bin/sh\nprintf '%s\\n' executed > \"$README_INSTALLER_MARKER\"\n")
+			if err := os.WriteFile(filepath.Join(fixture, "install.sh"), markerInstaller, 0700); err != nil {
+				t.Fatal(err)
+			}
+			markerSum := sha256.Sum256(markerInstaller)
+			if err := os.WriteFile(filepath.Join(fixture, "SHA256SUMS"), []byte(fmt.Sprintf("%x  install.sh\n%x  codator-linux-amd64\n", markerSum, sum)), 0600); err != nil {
+				t.Fatal(err)
+			}
+			dir := filepath.Join(root, "secure rejected")
+			if err := os.MkdirAll(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			old := []byte("old binary\n")
+			if err := os.WriteFile(filepath.Join(dir, "codator"), old, 0700); err != nil {
+				t.Fatal(err)
+			}
+			rejectedEnv := buildEnv(secureEnv, nil, map[string]string{
+				"CODATOR_INSTALL_DIR":     dir,
+				"FAKE_GH_LOG":             filepath.Join(root, "secure-rejected.gh-log"),
+				"FAKE_GH_MODE":            "reject",
+				"README_INSTALLER_MARKER": marker,
+			})
+			rejectedCmd := exec.Command("/bin/sh", "-c", bootstrap)
+			rejectedCmd.Env = rejectedEnv
+			output, err := rejectedCmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("security bootstrap accepted a rejected manifest: %s", output)
+			}
+			assertAttestationArgs(t, filepath.Join(root, "secure-rejected.gh-log"), "v9.9.9", 1)
+			if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+				t.Fatalf("rejected manifest executed installer: stat=%v", statErr)
+			}
+			got, readErr := os.ReadFile(filepath.Join(dir, "codator"))
+			if readErr != nil || string(got) != string(old) {
+				t.Fatalf("rejected manifest changed old destination to %q, err %v", got, readErr)
+			}
+		})
+
+		t.Run("installer checksum mismatch does not execute installer", func(t *testing.T) {
+			marker := filepath.Join(root, "secure-mismatched-installer-executed")
+			dir := filepath.Join(root, "secure mismatched")
+			if err := os.MkdirAll(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			old := []byte("old binary\n")
+			if err := os.WriteFile(filepath.Join(dir, "codator"), old, 0700); err != nil {
+				t.Fatal(err)
+			}
+			mismatchInstaller := []byte("#!/bin/sh\nprintf '%s\\n' executed > \"$README_INSTALLER_MARKER\"\n")
+			if err := os.WriteFile(filepath.Join(fixture, "install.sh"), mismatchInstaller, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(fixture, "SHA256SUMS"), []byte(fmt.Sprintf("%x  install.sh\n%x  codator-linux-amd64\n", installSum, sum)), 0600); err != nil {
+				t.Fatal(err)
+			}
+			mismatchEnv := buildEnv(secureEnv, nil, map[string]string{
+				"CODATOR_INSTALL_DIR":     dir,
+				"FAKE_GH_LOG":             filepath.Join(root, "secure-mismatch.gh-log"),
+				"FAKE_GH_MODE":            "",
+				"README_INSTALLER_MARKER": marker,
+			})
+			mismatchCmd := exec.Command("/bin/sh", "-c", bootstrap)
+			mismatchCmd.Env = mismatchEnv
+			output, err := mismatchCmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("security bootstrap accepted a checksum-mismatched installer: %s", output)
+			}
+			if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+				t.Fatalf("checksum-mismatched installer executed: stat=%v", statErr)
+			}
+			got, readErr := os.ReadFile(filepath.Join(dir, "codator"))
+			if readErr != nil || string(got) != string(old) {
+				t.Fatalf("checksum-mismatched installer changed old destination to %q, err %v", got, readErr)
+			}
+		})
+	})
+
+	t.Run("complete installer download failure never executes it", func(t *testing.T) {
+		marker := filepath.Join(root, "failed-installer-executed")
 		rejectedInstaller := []byte("#!/bin/sh\nprintf '%s\\n' executed > \"$README_INSTALLER_MARKER\"\n")
 		if err := os.WriteFile(filepath.Join(fixture, "install.sh"), rejectedInstaller, 0700); err != nil {
 			t.Fatal(err)
 		}
-		rejectedDir := filepath.Join(root, "rejected install")
-		if err := os.MkdirAll(rejectedDir, 0700); err != nil {
-			t.Fatal(err)
-		}
-		old := []byte("old binary\n")
-		if err := os.WriteFile(filepath.Join(rejectedDir, "codator"), old, 0700); err != nil {
-			t.Fatal(err)
-		}
+		rejectedDir := filepath.Join(root, "failed install")
 		rejectedEnv := buildEnv(env, nil, map[string]string{
 			"CODATOR_INSTALL_DIR":     rejectedDir,
-			"FAKE_GH_MODE":            "reject",
+			"FAKE_CURL_MODE":          "partial",
 			"README_INSTALLER_MARKER": marker,
 		})
 		rejectedCmd := exec.Command("/bin/sh", "-c", bootstrap)
 		rejectedCmd.Env = rejectedEnv
 		output, err := rejectedCmd.CombinedOutput()
 		if err == nil {
-			t.Fatalf("README bootstrap accepted an unsigned installer: %s", output)
+			t.Fatalf("README bootstrap accepted an incomplete installer: %s", output)
 		}
 		if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
-			t.Fatalf("rejected installer executed: stat=%v", statErr)
+			t.Fatalf("incomplete installer executed: stat=%v", statErr)
 		}
-		got, readErr := os.ReadFile(filepath.Join(rejectedDir, "codator"))
-		if readErr != nil || string(got) != string(old) {
-			t.Fatalf("rejected bootstrap changed old destination to %q, err %v", got, readErr)
+		if _, statErr := os.Stat(rejectedDir); !os.IsNotExist(statErr) {
+			t.Fatalf("incomplete bootstrap touched install directory: %v", statErr)
 		}
 	})
 }
@@ -800,6 +1023,9 @@ func assertAttestationArgs(t *testing.T, logPath, tag string, verifies int) {
 	if got := strings.Count(text, "attestation verify"); got != verifies {
 		t.Fatalf("attestation verifies=%d, want %d; log=%q", got, verifies, text)
 	}
+	if verifies > 0 && !strings.Contains(text, "/SHA256SUMS") {
+		t.Fatalf("attestation did not verify the signed manifest: %q", text)
+	}
 	for _, want := range []string{
 		"--bundle",
 		"--repo olafurns7/codator",
@@ -811,6 +1037,13 @@ func assertAttestationArgs(t *testing.T, logPath, tag string, verifies int) {
 		if !strings.Contains(text, want) {
 			t.Errorf("GitHub CLI log missing %q: %q", want, text)
 		}
+	}
+}
+
+func assertNoGitHubCLICall(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("default path invoked GitHub CLI: stat=%v", err)
 	}
 }
 
@@ -827,7 +1060,7 @@ func makeIsolatedInstallPath(t *testing.T, root, fakeBin string) string {
 	if err := os.Mkdir(isolated, 0700); err != nil {
 		t.Fatal(err)
 	}
-	for _, command := range []string{"awk", "chmod", "cp", "mkdir", "mktemp", "mv", "rm", "sed"} {
+	for _, command := range []string{"awk", "chmod", "cp", "mkdir", "mktemp", "mv", "rm", "sed", "sh"} {
 		path, err := exec.LookPath(command)
 		if err != nil {
 			t.Fatalf("find %s: %v", command, err)
