@@ -12,23 +12,144 @@ jobs:
     permissions:
       contents: read
 
-  release:
+  build:
     needs: validate
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          go-version-file: go.mod
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.8'
+          cache: false
       - name: Build release assets
         run: scripts/release.sh
       - name: Verify release assets
         run: |
           ./dist/codator-linux-amd64 --help
           (cd dist && sha256sum -c SHA256SUMS)
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-artifacts
+          if-no-files-found: error
+          path: |
+            dist/codator-linux-amd64
+            dist/codator-linux-arm64
+            dist/codator-darwin-amd64
+            dist/codator-darwin-arm64
+            dist/cdx
+            dist/cdl
+            dist/install.sh
+            dist/LICENSE
+            dist/SHA256SUMS
+
+  attest:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-artifacts
+          path: package
+      - name: Attest release payloads
+        id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            package/codator-linux-amd64
+            package/codator-linux-arm64
+            package/codator-darwin-amd64
+            package/codator-darwin-arm64
+            package/cdx
+            package/cdl
+            package/install.sh
+            package/LICENSE
+            package/SHA256SUMS
+      - name: Name attestation bundle
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: cp -- "$BUNDLE_PATH" package/attestations.jsonl
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-attested-package
+          if-no-files-found: error
+          path: |
+            package/codator-linux-amd64
+            package/codator-linux-arm64
+            package/codator-darwin-amd64
+            package/codator-darwin-arm64
+            package/cdx
+            package/cdl
+            package/install.sh
+            package/LICENSE
+            package/SHA256SUMS
+            package/attestations.jsonl
+
+  publish:
+    needs: attest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-attested-package
+          path: package
+      - name: Verify release attestations
+        env:
+          GH_REPO: olafurns7/codator
+          GH_TOKEN: ${{ github.token }}
+          GH_CERT_IDENTITY_PREFIX: https://github.com/olafurns7/codator/.github/workflows/release.yml@refs/tags/
+        run: |
+          set -eu
+          case "$GITHUB_REF_NAME" in
+            v*) ;;
+            *) echo "release workflow requires a v* tag" >&2; exit 1 ;;
+          esac
+          cert_identity="${GH_CERT_IDENTITY_PREFIX}${GITHUB_REF_NAME}"
+          source_ref="refs/tags/${GITHUB_REF_NAME}"
+          for asset in \
+            package/codator-linux-amd64 \
+            package/codator-linux-arm64 \
+            package/codator-darwin-amd64 \
+            package/codator-darwin-arm64 \
+            package/cdx \
+            package/cdl \
+            package/install.sh \
+            package/LICENSE \
+            package/SHA256SUMS
+          do
+            gh attestation verify "$asset" \
+              --repo "$GH_REPO" \
+              --cert-identity "$cert_identity" \
+              --source-ref "$source_ref" \
+              --deny-self-hosted-runners \
+              --hostname github.com \
+              --bundle package/attestations.jsonl
+          done
       - name: Publish GitHub release
         env:
+          GH_REPO: olafurns7/codator
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/codator-linux-amd64 dist/codator-linux-arm64 dist/codator-darwin-amd64 dist/codator-darwin-arm64 dist/cdx dist/cdl dist/LICENSE dist/SHA256SUMS --generate-notes --title "Codator $GITHUB_REF_NAME"
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GH_REPO" \
+            --generate-notes \
+            --title "Codator $GITHUB_REF_NAME" \
+            package/codator-linux-amd64 \
+            package/codator-linux-arm64 \
+            package/codator-darwin-amd64 \
+            package/codator-darwin-arm64 \
+            package/cdx \
+            package/cdl \
+            package/install.sh \
+            package/LICENSE \
+            package/SHA256SUMS \
+            package/attestations.jsonl

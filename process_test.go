@@ -51,11 +51,13 @@ func TestSignalDuringLaunchCancelsProbeGroup(t *testing.T) {
 			marker := filepath.Join(root, "blocked.json")
 			stub := filepath.Join(binDir, "codex")
 			script := `#!/bin/sh
+event_dir=` + shellQuote(eventDir) + `
+marker_file=` + shellQuote(marker) + `
 profile=${CODEX_HOME%/native}
 profile=${profile##*/}
 case "$*" in
   *app-server*)
-    printf probe > "$CODATOR_SIGNAL_EVENTS/probe-$profile"
+    printf probe > "$event_dir/probe-$profile"
     while IFS= read -r line; do
       case "$line" in
         *'"method":"initialize"'*) printf '%s\n' '{"id":1,"result":{}}' ;;
@@ -64,7 +66,7 @@ case "$*" in
           if [ "$profile" = a-blocked ]; then
             /bin/sleep 120 &
             child=$!
-            printf '%s %s %s\n' "$$" "$child" "$$" > "$CODATOR_SIGNAL_MARKER"
+            printf '%s %s %s\n' "$$" "$child" "$$" > "$marker_file"
             wait
           else
             printf '%s\n' '{"id":3,"result":{"ordinaryUsageAllowed":true,"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":20,"windowDurationMins":300,"resetsAt":4102444800},"secondary":{"usedPercent":30,"windowDurationMins":10080,"resetsAt":4102444800},"spendControlReached":false}}}}'
@@ -73,7 +75,7 @@ case "$*" in
       esac
     done
     ;;
-  *) printf launch > "$CODATOR_SIGNAL_EVENTS/launch-$profile" ;;
+  *) printf launch > "$event_dir/launch-$profile" ;;
 esac
 `
 			if err := os.WriteFile(stub, []byte(script), 0700); err != nil {
@@ -87,11 +89,9 @@ esac
 			cmd := exec.Command(exe, "-test.run=^TestCodatorSignalChild$")
 			cmd.Dir = root
 			cmd.Env = buildEnv(os.Environ(), nil, map[string]string{
-				"CODATOR_SIGNAL_CHILD":  "1",
-				"CODATOR_SIGNAL_EVENTS": eventDir,
-				"CODATOR_SIGNAL_MARKER": marker,
-				"PATH":                  binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-				"XDG_DATA_HOME":         dataHome,
+				"CODATOR_SIGNAL_CHILD": "1",
+				"PATH":                 binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+				"XDG_DATA_HOME":        dataHome,
 			})
 			var stdout, stderr bytes.Buffer
 			cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -295,16 +295,16 @@ func TestProbeDeadlineKillsShimAndGrandchild(t *testing.T) {
 	pidFile := filepath.Join(binDir, "child.pid")
 	shim := filepath.Join(binDir, "codex")
 	script := `#!/bin/sh
+pid_file=` + shellQuote(pidFile) + `
 sleep 30 &
 child=$!
-printf '%s' "$child" > "$CODATOR_CHILD_PID_FILE"
+printf '%s' "$child" > "$pid_file"
 wait
 `
 	if err := os.WriteFile(shim, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("CODATOR_CHILD_PID_FILE", pidFile)
 	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
 	defer cancel()
 

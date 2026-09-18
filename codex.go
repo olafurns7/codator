@@ -72,6 +72,36 @@ func codexEnv(nativeDir string, base []string) []string {
 	return buildEnv(base, codexAuthEnv, overrides)
 }
 
+// Keep probes isolated from ambient credentials and code-loading knobs while
+// retaining the profile, launcher, locale, temporary-file, proxy, and CA
+// settings needed by the native network client.
+func codexProbeEnv(nativeDir string) []string {
+	base := make([]string, 0, 24)
+	for _, item := range os.Environ() {
+		key, _, ok := cutEnv(item)
+		if ok && codexProbeEnvAllowed(key) {
+			base = append(base, item)
+		}
+	}
+	return codexEnv(nativeDir, base)
+}
+
+func codexProbeEnvAllowed(key string) bool {
+	if strings.HasPrefix(key, "LC_") {
+		return true
+	}
+	switch key {
+	case "HOME", "PATH", "LANG", "TMPDIR", "TMP", "TEMP",
+		"DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR", // Linux native credential store discovery.
+		"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+		"http_proxy", "https_proxy", "all_proxy", "no_proxy",
+		"CODEX_CA_CERTIFICATE", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS":
+		return true
+	default:
+		return false
+	}
+}
+
 func codexProbeArgs(args ...string) []string {
 	all := make([]string, 0, 2*len(codexForcedConfig)+len(args))
 	for _, config := range codexForcedConfig {
@@ -96,7 +126,7 @@ func probeCodexContext(ctx context.Context, account Account) (quota, error) {
 		return quota{}, err
 	}
 	cmd := probeCommand(ctx, path, codexProbeArgs("app-server", "--listen", "stdio://")...)
-	cmd.Env = codexEnv(account.NativeDir, os.Environ())
+	cmd.Env = codexProbeEnv(account.NativeDir)
 	cmd.Dir = account.NativeDir
 	cmd.Stderr = io.Discard
 	stdout, err := cmd.StdoutPipe()
