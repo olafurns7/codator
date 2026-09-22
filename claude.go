@@ -86,8 +86,10 @@ func hasAny(value string, parts ...string) bool {
 	return false
 }
 
+// macOS Claude reads its Keychain login under the USER account; without it
+// every profile looks signed out.
 func claudeProbeEnv(nativeDir string) []string {
-	allowed := map[string]bool{"HOME": true, "PATH": true, "LANG": true, "LC_ALL": true, "TMPDIR": true}
+	allowed := map[string]bool{"HOME": true, "PATH": true, "LANG": true, "LC_ALL": true, "TMPDIR": true, "USER": true}
 	base := make([]string, 0, len(allowed)+5)
 	for _, item := range os.Environ() {
 		key, _, ok := cutEnv(item)
