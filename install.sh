@@ -23,6 +23,12 @@ case "$verify_attestation" in
 	*) fail "CODATOR_VERIFY_ATTESTATION must be 0 or 1" ;;
 esac
 
+install_shortcuts=${CODATOR_SHORTCUTS-0}
+case "$install_shortcuts" in
+	0|1) ;;
+	*) fail "CODATOR_SHORTCUTS must be 0 or 1" ;;
+esac
+
 for command in awk chmod cp curl mkdir mktemp mv rm sed uname; do
 	command -v "$command" >/dev/null 2>&1 || fail "required command not found: $command"
 done
@@ -113,6 +119,13 @@ download() {
 
 download "$download_base/SHA256SUMS" "$tmp/SHA256SUMS" || fail "cannot download SHA256SUMS"
 download "$download_base/$asset" "$tmp/$asset" || fail "cannot download $asset"
+shortcuts=
+if [ "$install_shortcuts" = 1 ]; then
+	shortcuts="cdx cdl"
+fi
+for shortcut in $shortcuts; do
+	download "$download_base/$shortcut" "$tmp/$shortcut" || fail "cannot download $shortcut"
+done
 if [ "$verify_attestation" = 1 ]; then
 	download "$download_base/attestations.jsonl" "$tmp/attestations.jsonl" || fail "cannot download attestations.jsonl"
 	[ -s "$tmp/attestations.jsonl" ] || fail "downloaded attestations.jsonl is empty"
@@ -129,19 +142,27 @@ if [ "$verify_attestation" = 1 ]; then
 		--hostname github.com || fail "attestation verification failed for SHA256SUMS"
 fi
 
-expected=$(awk -v name="$asset" '
+verify_asset() {
+	expected=$(awk -v name="$1" '
 ($2 == name || $2 == "*" name) { count++; value = $1 }
 END { if (count != 1) exit 1; print value }
-' "$tmp/SHA256SUMS") || fail "SHA256SUMS has no unique checksum for $asset"
-case "$expected" in
-	''|*[!0123456789abcdefABCDEF]*) fail "invalid SHA256 checksum for $asset" ;;
-esac
-[ "${#expected}" -eq 64 ] || fail "invalid SHA256 checksum for $asset"
-printf '%s  %s\n' "$expected" "$asset" > "$tmp/checksum"
-case "$checksum_tool" in
-	sha256sum) (cd "$tmp" && sha256sum -c checksum) || fail "checksum verification failed for $asset" ;;
-	shasum) (cd "$tmp" && shasum -a 256 -c checksum) || fail "checksum verification failed for $asset" ;;
-esac
+' "$tmp/SHA256SUMS") || fail "SHA256SUMS has no unique checksum for $1"
+	case "$expected" in
+		''|*[!0123456789abcdefABCDEF]*) fail "invalid SHA256 checksum for $1" ;;
+	esac
+	[ "${#expected}" -eq 64 ] || fail "invalid SHA256 checksum for $1"
+	printf '%s  %s\n' "$expected" "$1" > "$tmp/checksum"
+	case "$checksum_tool" in
+		sha256sum) (cd "$tmp" && sha256sum -c checksum) || fail "checksum verification failed for $1" ;;
+		shasum) (cd "$tmp" && shasum -a 256 -c checksum) || fail "checksum verification failed for $1" ;;
+	esac
+}
+
+# Verify every download before installing any of them.
+verify_asset "$asset"
+for shortcut in $shortcuts; do
+	verify_asset "$shortcut"
+done
 
 mkdir -p "$install_dir" || fail "cannot create $install_dir"
 destination=$install_dir/codator
@@ -153,6 +174,25 @@ mv -f "$stage" "$destination" || fail "cannot install Codator"
 stage=
 
 printf 'Installed Codator at %s\n' "$destination"
+
+# Replace only files that already wrap Codator; never clobber an unrelated command.
+for shortcut in $shortcuts; do
+	target=$install_dir/$shortcut
+	if [ -e "$target" ] && ! awk '/codator/ { found = 1 } END { exit !found }' "$target" 2>/dev/null; then
+		printf 'Skipped %s: %s exists and is not a Codator wrapper.\n' "$shortcut" "$target" >&2
+		continue
+	fi
+	[ ! -d "$target" ] || fail "$target is a directory"
+	stage=$(mktemp "$install_dir/.$shortcut.XXXXXX") || fail "cannot stage $shortcut in $install_dir"
+	cp "$tmp/$shortcut" "$stage" || fail "cannot stage $shortcut"
+	chmod 0755 "$stage" || fail "cannot mark $shortcut executable"
+	mv -f "$stage" "$target" || fail "cannot install $shortcut"
+	stage=
+	printf 'Installed %s at %s\n' "$shortcut" "$target"
+done
+if [ -n "$shortcuts" ]; then
+	printf 'Warning: cdx and cdl skip all approval prompts. Use codator codex or codator claude for the normal permission flow.\n'
+fi
 doctor_supported=false
 if "$destination" --help 2>&1 | awk '
 $1 == "codator" && $2 == "doctor" { found = 1 }
@@ -177,9 +217,9 @@ if [ "$doctor_supported" = false ]; then
 fi
 if [ "$native_found" = false ]; then
 	if [ "$doctor_supported" = true ]; then
-		printf 'Codator is installed. Install the Codex or Claude native CLI: https://github.com/olafurns7/codator#requirements, then run codator doctor.\n'
+		printf 'Codator is installed. Install the Codex or Claude native CLI: https://github.com/olafurns7/codator#quick-start, then run codator doctor.\n'
 	else
-		printf 'Codator is installed. Install the Codex or Claude native CLI: https://github.com/olafurns7/codator#requirements.\n'
+		printf 'Codator is installed. Install the Codex or Claude native CLI: https://github.com/olafurns7/codator#quick-start.\n'
 	fi
 fi
 case ":${PATH:-}:" in
