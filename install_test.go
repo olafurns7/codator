@@ -39,6 +39,14 @@ func TestInstallScript(t *testing.T) {
 		sum := sha256.Sum256(asset)
 		fmt.Fprintf(&sums, "%x  %s\n", sum, target.asset)
 	}
+	for _, shortcut := range []string{"cdx", "cdl"} {
+		body := []byte("#!/bin/sh\nexec codator " + shortcut + " \"$@\"\n")
+		assets[shortcut] = body
+		if err := os.WriteFile(filepath.Join(fixture, shortcut), body, 0700); err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintf(&sums, "%x  %s\n", sha256.Sum256(body), shortcut)
+	}
 	if err := os.WriteFile(filepath.Join(fixture, "SHA256SUMS"), []byte(sums.String()), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -133,10 +141,13 @@ case "${FAKE_CURL_MODE:-}" in
   missingbundle)
     case "$url" in */attestations.jsonl) exit 22 ;; esac
     ;;
+  tampered-shortcut)
+    case "$url" in */cdl) printf '%s\n' corrupt > "$out"; exit 0 ;; esac
+    ;;
 esac
 asset=${url##*/}
 case "$asset" in
-  SHA256SUMS|attestations.jsonl|install.sh|codator-linux-amd64|codator-linux-arm64|codator-darwin-amd64|codator-darwin-arm64)
+  cdx|cdl|SHA256SUMS|attestations.jsonl|install.sh|codator-linux-amd64|codator-linux-arm64|codator-darwin-amd64|codator-darwin-arm64)
     cp "$FAKE_RELEASE_FIXTURE/$asset" "$out"
     ;;
   *) exit 22 ;;
@@ -264,6 +275,52 @@ esac
 	}
 
 	installDir := filepath.Join(root, "install dir's space")
+	t.Run("shortcuts are opt-in, verified, and never clobber unrelated commands", func(t *testing.T) {
+		dir := filepath.Join(root, "shortcuts")
+		if output, err := run(t, dir, nil, true); err != nil {
+			t.Fatalf("installer failed: %v\n%s", err, output)
+		}
+		for _, shortcut := range []string{"cdx", "cdl"} {
+			if _, err := os.Stat(filepath.Join(dir, shortcut)); !os.IsNotExist(err) {
+				t.Fatalf("%s installed without CODATOR_SHORTCUTS: %v", shortcut, err)
+			}
+		}
+
+		oldCdx := []byte("#!/bin/sh\nexec codator codex \"$@\"\n")
+		foreignCdl := []byte("#!/bin/sh\necho someone else's cdl\n")
+		if err := os.WriteFile(filepath.Join(dir, "cdx"), oldCdx, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "cdl"), foreignCdl, 0700); err != nil {
+			t.Fatal(err)
+		}
+		output, err := run(t, dir, map[string]string{"CODATOR_SHORTCUTS": "1"}, true)
+		if err != nil {
+			t.Fatalf("installer failed: %v\n%s", err, output)
+		}
+		if got, _ := os.ReadFile(filepath.Join(dir, "cdx")); string(got) != string(assets["cdx"]) {
+			t.Fatalf("old Codator cdx was not replaced: %q", got)
+		}
+		if got, _ := os.ReadFile(filepath.Join(dir, "cdl")); string(got) != string(foreignCdl) {
+			t.Fatalf("unrelated cdl was overwritten: %q", got)
+		}
+		if !strings.Contains(output, "Skipped cdl") || !strings.Contains(output, "skip all approval prompts") {
+			t.Fatalf("missing skip notice or warning:\n%s", output)
+		}
+
+		fresh := filepath.Join(root, "shortcuts tampered")
+		output, err = run(t, fresh, map[string]string{"CODATOR_SHORTCUTS": "1", "FAKE_CURL_MODE": "tampered-shortcut"}, true)
+		if err == nil || !strings.Contains(output, "checksum verification failed for cdl") {
+			t.Fatalf("tampered shortcut accepted: %v\n%s", err, output)
+		}
+		if _, err := os.Stat(filepath.Join(fresh, "codator")); !os.IsNotExist(err) {
+			t.Fatalf("binary installed before all downloads verified: %v", err)
+		}
+
+		if output, err := run(t, fresh, map[string]string{"CODATOR_SHORTCUTS": "yes"}, true); err == nil || !strings.Contains(output, "CODATOR_SHORTCUTS must be 0 or 1") {
+			t.Fatalf("invalid CODATOR_SHORTCUTS accepted: %v\n%s", err, output)
+		}
+	})
 	t.Run("installs verified pinned release into path with spaces", func(t *testing.T) {
 		output, err := run(t, installDir, nil, false)
 		if err != nil {

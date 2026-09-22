@@ -62,13 +62,16 @@ That's all you need. The rest of this page covers optional shortcuts, MCP server
 
 > Only use them in repositories, tools, and plugins you trust. For the normal sandbox and approval prompts, run `codator codex` or `codator claude` directly.
 
-~~~sh
-version=v0.5.1
-for s in cdx cdl; do
-  curl -fsSL -o ~/.local/bin/$s "https://github.com/olafurns7/codator/releases/download/$version/$s"
-  chmod 755 ~/.local/bin/$s
-done
+Install them by running the step 2 snippet with one extra variable:
 
+~~~sh
+export CODATOR_SHORTCUTS=1
+# then paste the install snippet from step 2
+~~~
+
+The installer verifies both wrappers against the release checksums and puts them next to `codator`. It replaces an existing `cdx` or `cdl` only if that file already calls Codator; any other command with the same name is left alone and reported.
+
+~~~sh
 cdx
 cdl --account work --model sonnet
 ~~~
