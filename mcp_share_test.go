@@ -290,3 +290,59 @@ func TestSharedMCPRejectsConflictsAndCredentialMigration(t *testing.T) {
 		}
 	})
 }
+
+func TestSharedMCPFailureWarnsOrdinarySessionsOnly(t *testing.T) {
+	conditions := map[string]func(t *testing.T, store *Store, accounts []Account){
+		"busy": func(t *testing.T, store *Store, accounts []Account) {
+			config := readMCPSharingFixture(t, accounts[0])
+			config["mcp_servers"] = map[string]any{"new": map[string]string{"url": "https://mcp.example.test"}}
+			writeMCPSharingFixture(t, accounts[0], config)
+			lock, err := store.Lock("codex", accounts[1].Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { lock.Close() })
+		},
+		"unsafe": func(t *testing.T, store *Store, accounts []Account) {
+			if err := os.Chmod(accounts[1].NativeDir, 0755); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"conflicting": func(t *testing.T, store *Store, accounts []Account) {
+			for i, account := range accounts[:2] {
+				config := readMCPSharingFixture(t, account)
+				config["mcp_servers"] = map[string]any{"same-name": map[string]string{"url": fmt.Sprintf("https://server%d.example.test", i)}}
+				writeMCPSharingFixture(t, account, config)
+			}
+		},
+	}
+	for name, setup := range conditions {
+		t.Run(name, func(t *testing.T) {
+			store, accounts := setupMCPSharingTest(t)
+			runSharedMCPSync(t, store, true)
+			setup(t, store, accounts)
+			var out strings.Builder
+			if err := syncSharedMCPForSession(context.Background(), store, []string{"-c", `sandbox_mode="danger-full-access"`, "resume", "--last"}, &out); err != nil {
+				t.Fatalf("ordinary session stopped: %v", err)
+			}
+			if !strings.Contains(out.String(), "warning: MCP settings were not shared") {
+				t.Fatalf("missing warning: %q", out.String())
+			}
+			if err := syncSharedMCPForSession(context.Background(), store, []string{"-c", `sandbox_mode="danger-full-access"`, "mcp", "logout", "posthog"}, io.Discard); err == nil {
+				t.Fatal("native MCP command proceeded without shared settings")
+			}
+			if _, err := syncSharedMCP(context.Background(), store, true, io.Discard); err == nil {
+				t.Fatal("mcp share accepted a failed synchronization")
+			}
+			err := loginMCPContext(context.Background(), store, invocation{account: accounts[0].Name, mcp: &mcpLoginOptions{}}, strings.NewReader(""), io.Discard)
+			if err == nil {
+				t.Fatal("mcp login proceeded without shared settings")
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			if err := syncSharedMCPForSession(ctx, store, nil, io.Discard); !errors.Is(err, context.Canceled) {
+				t.Fatalf("cancellation did not stop the session: %v", err)
+			}
+		})
+	}
+}

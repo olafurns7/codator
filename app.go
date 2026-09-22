@@ -87,7 +87,7 @@ func login(store *Store, inv invocation) error {
 	}
 	if inv.provider == "codex" {
 		signals := newProbeSignalScope()
-		_, err := syncSharedMCP(signals.ctx, store, false, os.Stderr)
+		err := syncSharedMCPForSession(signals.ctx, store, nil, os.Stderr)
 		signals.stopListening()
 		if err != nil {
 			return err
@@ -112,6 +112,28 @@ func login(store *Store, inv invocation) error {
 	}
 	args := append([]string{"auth", "login"}, inv.args...)
 	return execNative(lock, path, args, claudeEnv(account.NativeDir, os.Environ()))
+}
+
+// Ordinary sessions keep each profile's existing MCP settings when sharing
+// fails. Native MCP commands stay strict so they never act on unshared settings.
+func syncSharedMCPForSession(ctx context.Context, store *Store, args []string, out io.Writer) error {
+	_, err := syncSharedMCP(ctx, store, false, out)
+	if err == nil {
+		return nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	for _, arg := range args {
+		if arg == "--" {
+			break
+		}
+		if arg == "mcp" {
+			return err
+		}
+	}
+	fmt.Fprintf(out, "codator: warning: MCP settings were not shared (%v); continuing with each profile's existing MCP settings\n", err)
+	return nil
 }
 
 func status(store *Store, out io.Writer, providers ...string) error {
@@ -195,7 +217,7 @@ func launch(store *Store, inv invocation) error {
 		return err
 	}
 	if inv.provider == "codex" {
-		if _, err := syncSharedMCP(signals.ctx, store, false, os.Stderr); err != nil {
+		if err := syncSharedMCPForSession(signals.ctx, store, inv.args, os.Stderr); err != nil {
 			return err
 		}
 	}
