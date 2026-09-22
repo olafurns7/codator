@@ -23,7 +23,7 @@ On Linux, Codex also needs `bubblewrap` for its sandbox: `sudo apt install bubbl
 ~~~sh
 (
 set -eu
-version=${CODATOR_VERSION:-v0.5.0}
+version=${CODATOR_VERSION:-v0.5.1}
 installer=$(mktemp)
 trap 'rm -f "$installer"' EXIT
 curl -fsSL -o "$installer" "https://github.com/olafurns7/codator/releases/download/$version/install.sh"
@@ -63,7 +63,7 @@ That's all you need. The rest of this page covers optional shortcuts, MCP server
 > Only use them in repositories, tools, and plugins you trust. For the normal sandbox and approval prompts, run `codator codex` or `codator claude` directly.
 
 ~~~sh
-version=v0.5.0
+version=v0.5.1
 for s in cdx cdl; do
   curl -fsSL -o ~/.local/bin/$s "https://github.com/olafurns7/codator/releases/download/$version/$s"
   chmod 755 ~/.local/bin/$s
