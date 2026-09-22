@@ -6,3 +6,7 @@
 
 # Local research, review reports, and agent handoffs.
 /docs/
+
+# Local agent skill installs.
+/.agents/
+/skills-lock.json
