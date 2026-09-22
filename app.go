@@ -26,6 +26,13 @@ func execute(inv invocation) (int, error) {
 		return 1, err
 	}
 	switch inv.verb {
+	case "mcp-share":
+		signals := newProbeSignalScope()
+		defer signals.stopListening()
+		_, err := syncSharedMCP(signals.ctx, store, true, os.Stdout)
+		return 0, err
+	case "mcp-login":
+		return 0, loginMCP(store, inv, os.Stdin, os.Stdout)
 	case "login":
 		return 0, login(store, inv)
 	case "status":
@@ -77,6 +84,14 @@ func login(store *Store, inv invocation) error {
 	account, err := store.EnsureAccount(inv.provider, inv.account)
 	if err != nil {
 		return err
+	}
+	if inv.provider == "codex" {
+		signals := newProbeSignalScope()
+		_, err := syncSharedMCP(signals.ctx, store, false, os.Stderr)
+		signals.stopListening()
+		if err != nil {
+			return err
+		}
 	}
 	lock, err := store.Lock(inv.provider, inv.account)
 	if err != nil {
@@ -178,6 +193,11 @@ func launch(store *Store, inv invocation) error {
 	path, err := findNative(inv.provider)
 	if err != nil {
 		return err
+	}
+	if inv.provider == "codex" {
+		if _, err := syncSharedMCP(signals.ctx, store, false, os.Stderr); err != nil {
+			return err
+		}
 	}
 	accounts, err := store.Accounts(inv.provider)
 	if err != nil {

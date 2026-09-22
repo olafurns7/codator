@@ -11,6 +11,14 @@ if [ "${1-}" = "--account" ]; then
     shift 2
 fi
 
+# MCP OAuth needs Codator's callback input when the browser is remote.
+if [ "${1-}" = "mcp" ] && [ "${2-}" = "login" ]; then
+    if [ "$cdx_has_account" = 1 ]; then
+        set -- "$@" --account "$cdx_account"
+    fi
+    exec codator "$@"
+fi
+
 # Keep help and version on Codator's account-free information path.
 case "${1-}" in
     -h|--help|-V|--version) ;;

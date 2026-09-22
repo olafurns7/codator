@@ -9,6 +9,8 @@ import (
 const usage = `Usage:
   codator login codex NAME [-- native-login-options]
   codator login claude NAME [-- native-login-options]
+  codator mcp login SERVER [--account NAME] [--timeout 30m] [--scopes SCOPE,...]
+  codator mcp share
   codator doctor [codex|claude]
   codator status [codex|claude]
   codator codex [--account NAME] [native arguments]
@@ -17,10 +19,14 @@ const usage = `Usage:
 
 For launch, Codator consumes only a leading --account NAME pair. Every
 remaining argument, including --, is passed unchanged to the native CLI.
+MCP login uses the current profile, --account NAME, or any shared profile.
+It waits 30 minutes and accepts a pasted browser callback URL on stdin.
+Use mcp share to share MCP settings and keyring logins across Codex accounts.
 
 Examples:
   codator login codex personal
   codator doctor codex
+  codator mcp login posthog --account personal
   codator status
   codator claude --account work --model sonnet`
 
@@ -31,6 +37,7 @@ type invocation struct {
 	provider string
 	account  string
 	args     []string
+	mcp      *mcpLoginOptions
 }
 
 func parseInvocation(args []string) (invocation, error) {
@@ -38,6 +45,8 @@ func parseInvocation(args []string) (invocation, error) {
 		return invocation{verb: "help"}, nil
 	}
 	switch args[0] {
+	case "mcp":
+		return parseMCPInvocation(args[1:])
 	case "login":
 		if len(args) < 3 || !validProvider(args[1]) || !validLabel(args[2]) {
 			return invocation{}, fmt.Errorf("%w: login requires a provider and valid account name", errUsage)

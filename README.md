@@ -27,7 +27,7 @@ Set `CODATOR_VERIFY_ATTESTATION=1` when you want the stronger optional provenanc
 set -eu
 umask 077
 repo=https://github.com/olafurns7/codator
-version=${CODATOR_VERSION:-v0.4.0}
+version=${CODATOR_VERSION:-v0.5.0}
 
 fail() {
   printf '%s\n' "codator bootstrap: $*" >&2
@@ -51,7 +51,7 @@ CODATOR_VERSION="$version" sh "$tmp/install.sh"
 )
 ~~~
 
-This bootstrap downloads the complete versioned installer into a private temporary directory, then executes that downloaded file; it never pipes mutable `main` into a shell. It uses `v0.4.0` unless `CODATOR_VERSION` is set to another concrete release tag. Set `CODATOR_INSTALL_DIR` before the snippet to choose another destination, for example `export CODATOR_INSTALL_DIR="$HOME/bin"`. By default this installs codator in `~/.local/bin`. If that directory is not already in PATH, the installer prints the exact export to add to `~/.zshrc` or `~/.bashrc`; reload it, for example:
+This bootstrap downloads the complete versioned installer into a private temporary directory, then executes that downloaded file; it never pipes mutable `main` into a shell. It uses `v0.5.0` unless `CODATOR_VERSION` is set to another concrete release tag. Set `CODATOR_INSTALL_DIR` before the snippet to choose another destination, for example `export CODATOR_INSTALL_DIR="$HOME/bin"`. By default this installs codator in `~/.local/bin`. If that directory is not already in PATH, the installer prints the exact export to add to `~/.zshrc` or `~/.bashrc`; reload it, for example:
 
 ~~~sh
 . ~/.zshrc
@@ -120,7 +120,7 @@ cdx
 cdx --account personal --model gpt-5.6-luna
 ~~~
 
-The helper keeps native flags available and forwards them unchanged. Remove any old `alias cdx='codator codex'` from your shell configuration, then reload it, for example with `. ~/.zshrc`.
+The helper keeps native flags available and forwards them unchanged, except that `cdx mcp login SERVER` uses Codator's MCP login command so it can accept a pasted browser callback. It supports the same `--timeout` and `--scopes` options, with an optional leading `--account NAME`. Remove any old `alias cdx='codator codex'` from your shell configuration, then reload it, for example with `. ~/.zshrc`.
 
 For a `cdl` shortcut that starts Claude with `--dangerously-skip-permissions --permission-mode bypassPermissions`, install the helper from a source checkout:
 
@@ -136,6 +136,43 @@ cdl --account personal --model sonnet
 Remove any old `alias cdl='codator claude'` from your shell configuration so it does not override the helper, then reload that file. The helper preserves leading `--account NAME` selection, native arguments, and the account-free help/version commands. Bypass mode skips Claude's permission checks; it is an explicit choice made by this shortcut. Normal `codator codex` and `codator claude` commands do not add either helper's bypass flags.
 
 Each label has its own native settings, sessions, and history beneath ${XDG_DATA_HOME:-$HOME/.local/share}/codator/. Files and directories use private permissions, but filesystem permissions are not encryption. This is same-UID profile separation, not OS isolation: Codator trusts the user's home and environment, the native CLI, installed plugins, and PATH, and it cannot protect one same-UID process from another. Codator leaves provider credentials to their native CLIs. Credential-changing commands retain an exclusive profile lock; normal Codex and Claude sessions release it after selection, so concurrent normal sessions can share a profile.
+
+### Codex MCP OAuth login on a remote machine
+
+For an MCP server already configured in a Codator profile, run:
+
+~~~sh
+codator mcp login posthog --account personal
+~~~
+
+The installed shortcut also supports `cdx mcp login posthog`, or `cdx --account personal mcp login posthog` for a specific profile. Both use the same callback input described below.
+
+Open the printed authorization URL in your browser and leave this command running. If your browser is on another computer, its `127.0.0.1` callback page may fail to load. Copy that complete callback URL from the browser address bar, paste it into the waiting Codator terminal, and press Enter. Codator forwards it to the matching Codex listener on the remote machine. A browser on the same machine, or an SSH-forwarded callback, can finish without pasting anything.
+
+The command waits up to 30 minutes; `--timeout 10m` changes that window. Closing it or pressing Ctrl+C ends the login. A callback from a stopped or expired login cannot finish a new one: start the command again and use its new authorization URL. The callback contains a one-use code, while the original native Codex process holds the PKCE verifier needed to exchange it.
+
+Inside a Codator-launched Codex session, `codator mcp login posthog` keeps the profile identified by the inherited `CODEX_HOME`. Outside such a session, use `--account` when multiple profiles exist, or enable MCP sharing below. OAuth does not require model quota, so this command does not rotate accounts or run usage checks. It retains the profile lock, preserves the current working directory for project configuration, and lets Codex handle the token exchange and credential storage.
+
+Scopes come from native Codex configuration and server discovery unless you explicitly pass `--scopes openid,user:read,...`. Prefer the server defaults: a custom list can omit a permission the server needs even when consent succeeds. OAuth success confirms credential storage; it does not guarantee tool access. Reconnect the server or restart the Codex session after login. A later MCP HTTP 401/403 requires checking the server's scopes, account access, and configuration.
+
+This uses the native [Codex app-server OAuth protocol](https://learn.chatgpt.com/docs/app-server). It requires a Codex version that reports `codexHome` during initialization and supports `mcpServer/oauth/login` with `timeoutSecs` (verified with 0.155.1). The existing `codator codex --account personal mcp login posthog` remains a direct native CLI invocation with native behavior and timeout.
+
+For an agent handling the browser step, keep `codator mcp login` alive in a persistent terminal or tool PTY. Send the returned callback URL to that same process's stdin followed by a newline. Do not start another login to submit a callback, put callback URLs in command-line arguments, or report success before the native completion result.
+
+### Share MCPs across Codex accounts
+
+Enable sharing once so every account selected by `cdx` can use the same user-configured MCP servers and OAuth logins:
+
+~~~sh
+codator mcp share
+codator mcp login posthog
+~~~
+
+Sharing combines the base `[mcp_servers]` definitions in each enrolled Codex account and sets `mcp_oauth_credentials_store = "keyring"`. Native Codex uses the same OS keyring entry for the same server name and URL across profiles, so one successful login is available to all of them. `codator mcp login` then works without `--account`, including outside a Codex session. Logging out of that shared MCP also affects the other profiles. Already-running sessions may need to reconnect the server or restart.
+
+Before subsequent Codator Codex launches and logins, additions, edits, and removals in any profile's base user MCP settings propagate to the others. Newly enrolled accounts inherit them. Conflicting edits to the same server are reported for resolution. Project settings, named configuration profiles, plugin installations, ChatGPT logins, sessions, models, and hooks retain their existing scope.
+
+Sharing is opt-in and requires a working native OS keyring. If a profile has file-based MCP credentials, the command asks you to configure and sign in with the native keyring first; it does not copy token files. Codator stores the shared definitions and synchronization snapshots in its private `codex-mcp-shared.json` file and saves each changed profile's original config as `config.toml.before-mcp-sharing`. It uses the native Codex configuration API to preserve unrelated settings. Unchanged configurations need only a local file check on launch.
 
 ### Claude setup recovery
 
@@ -174,7 +211,7 @@ Maintainers build the four binaries, `cdx`, `cdl`, `install.sh`, `LICENSE`, and 
 scripts/release.sh
 ~~~
 
-The maintainer release sequence is documented in [RELEASING.md](docs/RELEASING.md). It uses local gates and builds at the exact annotated `v0.4.0` tag, uploads a draft GitHub release, then manually invokes the one-job signing workflow with the local `SHA256SUMS` hash. The workflow signs only `SHA256SUMS`, which authenticates the eight payloads through their hashes, and adds only `attestations.jsonl`; it never builds, tests, or publishes. Verify the returned manifest attestation locally before publishing the draft. Go 1.26 is the last Go series supported on macOS 12. Before Go 1.26 support ends, move macOS 12 users to a supported Go branch or raise the project's macOS minimum; do not treat an indefinitely frozen 1.26 toolchain as the update policy.
+The maintainer release sequence is documented in [RELEASING.md](docs/RELEASING.md). It uses local gates and builds at the exact annotated `v0.5.0` tag, uploads a draft GitHub release, then manually invokes the one-job signing workflow with the local `SHA256SUMS` hash. The workflow signs only `SHA256SUMS`, which authenticates the eight payloads through their hashes, and adds only `attestations.jsonl`; it never builds, tests, or publishes. Verify the returned manifest attestation locally before publishing the draft. Go 1.26 is the last Go series supported on macOS 12. Before Go 1.26 support ends, move macOS 12 users to a supported Go branch or raise the project's macOS minimum; do not treat an indefinitely frozen 1.26 toolchain as the update policy.
 
 The release payloads are `codator-linux-amd64`, `codator-linux-arm64`, `codator-darwin-amd64`, `codator-darwin-arm64`, `cdx`, `cdl`, `install.sh`, `LICENSE`, and `SHA256SUMS`. The binary installer does not install shortcuts. Native macOS CI uses fake native adapters; it does not verify a Claude or Codex account flow on macOS.
 
