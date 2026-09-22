@@ -460,3 +460,16 @@ func TestProbeClaudeHandshakeAndNoUserFrame(t *testing.T) {
 		t.Fatalf("Claude probe descendant %d survived cleanup", pid)
 	}
 }
+
+func TestClaudeProbeEnvKeepsUser(t *testing.T) {
+	t.Setenv("USER", "synthetic-user")
+	t.Setenv("ANTHROPIC_API_KEY", "synthetic-secret")
+	t.Setenv("UNRELATED_VAR", "x")
+	env := strings.Join(claudeProbeEnv(t.TempDir()), "\n")
+	if !strings.Contains(env, "USER=synthetic-user") {
+		t.Fatalf("probe env dropped USER: %q", env)
+	}
+	if strings.Contains(env, "synthetic-secret") || strings.Contains(env, "UNRELATED_VAR") {
+		t.Fatalf("probe env leaked non-allowlisted values: %q", env)
+	}
+}
