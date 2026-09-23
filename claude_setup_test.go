@@ -360,6 +360,7 @@ func TestClaudeSetupSignalCancelsAuthStatusBeforeNativeLaunch(t *testing.T) {
 	child := filepath.Join(account.NativeDir, ".auth-child")
 	usage := `{"type":"control_response","response":{"subtype":"success","request_id":"usage-1","response":{"subscription_type":"max","rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":10,"resets_at":"2099-01-01T00:00:00Z"}}}}}`
 	script := `#!/bin/sh
+if [ "$1" = --version ]; then printf 'unknown\n'; exit 0; fi
 if [ "$1" = --print ]; then
   while IFS= read -r line; do
     case "$line" in
@@ -460,6 +461,7 @@ func writeClaudeSetupLaunchStub(t *testing.T, path string) {
 	t.Helper()
 	usage := `{"type":"control_response","response":{"subtype":"success","request_id":"usage-1","response":{"subscription_type":"max","rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":10,"resets_at":"2099-01-01T00:00:00Z"}}}}}`
 	script := `#!/bin/sh
+if [ "$1" = --version ]; then printf 'unknown\n'; exit 0; fi
 if [ "$1" = --print ]; then
   while IFS= read -r line; do
     case "$line" in

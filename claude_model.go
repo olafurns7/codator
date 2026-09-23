@@ -1,18 +1,21 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // A model hint only narrows quota checks. Any unobserved override must leave
 // the hint unknown so that all model limits still apply.
-func launchClaudeModel(provider string, args []string, account Account) claudeModelFamily {
+func launchClaudeModel(provider string, args []string, account Account, runtimeDefault func() claudeModelFamily) claudeModelFamily {
 	if provider != "claude" || claudeModelRemapped() {
 		return ""
 	}
@@ -35,8 +38,43 @@ func launchClaudeModel(provider string, args []string, account Account) claudeMo
 	if name == "" {
 		name = os.Getenv("ANTHROPIC_DEFAULT_MODEL")
 	}
+	if name == "" && runtimeDefault != nil {
+		return runtimeDefault()
+	}
 	model, _ := claudeModelFamilyForName(name)
 	return model
+}
+
+// Claude Code 2.1.280 changed the first-party implicit default to Opus.
+// Unknown and older versions keep the conservative all-model quota check.
+func claudeRuntimeDefault(parent context.Context, path string) claudeModelFamily {
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+	output := &limitedProbeOutput{limit: 128}
+	cmd := probeCommand(ctx, path, "--version")
+	cmd.Dir, cmd.Env = os.TempDir(), claudeProbeEnv("")
+	cmd.Stdout, cmd.Stderr = output, io.Discard
+	if err := cmd.Start(); err != nil {
+		return ""
+	}
+	if waitProbe(cmd) != nil || output.exceeded {
+		return ""
+	}
+	version := strings.TrimSpace(output.String())
+	version = strings.TrimSuffix(version, " (Claude Code)")
+	major, rest, ok := strings.Cut(version, ".")
+	if !ok || major != "2" {
+		return ""
+	}
+	minor, patch, ok := strings.Cut(rest, ".")
+	if !ok || minor != "1" || patch == "" || strings.Trim(patch, "0123456789") != "" {
+		return ""
+	}
+	build, err := strconv.Atoi(patch)
+	if err != nil || build < 280 {
+		return ""
+	}
+	return claudeModelOpus
 }
 
 func claudeModelRemapped() bool {
