@@ -287,9 +287,9 @@ const (
 
 func claudeModelFamilyForName(name string) (claudeModelFamily, bool) {
 	switch name {
-	case "opus", "claude-opus-5":
+	case "opus", "opus[1m]", "claude-opus-5", "claude-opus-5-5":
 		return claudeModelOpus, true
-	case "sonnet", "claude-sonnet-5":
+	case "sonnet", "sonnet[1m]", "claude-sonnet-5":
 		return claudeModelSonnet, true
 	case "haiku":
 		return claudeModelHaiku, true
