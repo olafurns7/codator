@@ -98,21 +98,38 @@ func parseLaunchArgs(args []string) (string, []string, error) {
 }
 
 func claudeModelHint(args []string) claudeModelFamily {
+	return claudeModelHintWithFallback(args, "")
+}
+
+func claudeModelHintWithFallback(args []string, fallback claudeModelFamily) claudeModelFamily {
 	var model claudeModelFamily
 	seen := false
+	implicitOK := true
 	for i := 0; i < len(args); {
 		arg := args[i]
 		if arg == "--" {
 			if seen && hasClaudeModelOption(args[i+1:]) {
 				return ""
 			}
-			return model
+			if seen {
+				return model
+			}
+			if !implicitOK || hasClaudeOptionTail(args[i+1:]) {
+				return ""
+			}
+			return fallback
 		}
 		if !strings.HasPrefix(arg, "-") {
 			if seen && hasClaudeModelOption(args[i+1:]) {
 				return ""
 			}
-			return model
+			if seen {
+				return model
+			}
+			if !implicitOK || arg == "resume" || arg == "continue" || arg == "agents" || hasClaudeOptionTail(args[i+1:]) {
+				return ""
+			}
+			return fallback
 		}
 		switch {
 		case arg == "--model" || strings.HasPrefix(arg, "--model="):
@@ -142,6 +159,9 @@ func claudeModelHint(args []string) claudeModelFamily {
 			arg == "--continue" || arg == "-c" || arg == "--from-pr" || arg == "--teleport":
 			return ""
 		case claudeValueOption(arg):
+			if arg == "--settings" || arg == "--cwd" || arg == "--plugin-dir" || arg == "--plugin-dir-no-mcp" {
+				implicitOK = false
+			}
 			if i+1 == len(args) || args[i+1] == "--" {
 				return ""
 			}
@@ -154,7 +174,22 @@ func claudeModelHint(args []string) claudeModelFamily {
 			return ""
 		}
 	}
-	return model
+	if seen {
+		return model
+	}
+	if implicitOK {
+		return fallback
+	}
+	return ""
+}
+
+func hasClaudeOptionTail(args []string) bool {
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-") {
+			return true
+		}
+	}
+	return false
 }
 
 func hasClaudeModelOption(args []string) bool {

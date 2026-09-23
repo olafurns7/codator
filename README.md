@@ -23,7 +23,7 @@ On Linux, Codex also needs `bubblewrap` for its sandbox: `sudo apt install bubbl
 ~~~sh
 (
 set -eu
-version=${CODATOR_VERSION:-v0.5.2}
+version=${CODATOR_VERSION:-v0.5.3}
 installer=$(mktemp)
 trap 'rm -f "$installer"' EXIT
 curl -fsSL -o "$installer" "https://github.com/olafurns7/codator/releases/download/$version/install.sh"
@@ -106,7 +106,9 @@ Automatic selection skips accounts that are busy, exhausted, spend-capped, not o
 - **unknown:** Codator could not read reliable usage data. Automatic selection skips it. An explicit `--account` still launches if the subscription is verified.
 - **cooldown (Claude):** Codator is waiting before it retries a usage probe that failed.
 
-Codator counts Claude's session and weekly limits separately from its model-specific weekly limits. If you pass a recognized `--model`, Codator also checks that model's limit. An exhausted Fable limit therefore does not block other models. Codator never sets or enforces spending caps.
+Codator counts Claude's session and weekly limits separately from its model-specific weekly limits. It checks a recognized `--model`, or for a plain launch, each account's `ANTHROPIC_MODEL`, saved `settings.json` model, or `ANTHROPIC_DEFAULT_MODEL` in that order. An exhausted Fable limit therefore does not block a known Opus launch. Unfamiliar models, conflicting settings, and ambiguous native arguments keep the conservative all-model check. Codator forwards native arguments unchanged and never sets or enforces spending caps.
+
+Claude usage is cached on disk per account for 5 minutes after success and 15 minutes after failed or unknown probes; account locks and probe reservations prevent duplicate concurrent probes.
 
 ## Codex MCP servers
 

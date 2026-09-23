@@ -92,9 +92,12 @@ func TestClaudeModelHintUsesOnlyUnambiguousNativeModelFlags(t *testing.T) {
 	}{
 		{"Sonnet alias", []string{"--model", "sonnet"}, claudeModelSonnet},
 		{"Opus alias", []string{"--model", "opus"}, claudeModelOpus},
+		{"Opus 1m alias", []string{"--model", "opus[1m]"}, claudeModelOpus},
+		{"Sonnet 1m alias", []string{"--model", "sonnet[1m]"}, claudeModelSonnet},
 		{"Fable alias", []string{"--model", "fable"}, claudeModelFable},
 		{"Haiku alias", []string{"--model", "haiku"}, claudeModelHaiku},
 		{"current Opus full ID", []string{"--model", "claude-opus-5"}, claudeModelOpus},
+		{"current Opus 5.5 full ID", []string{"--model", "claude-opus-5-5"}, claudeModelOpus},
 		{"current Sonnet full ID", []string{"--model", "claude-sonnet-5"}, claudeModelSonnet},
 		{"current Fable full ID", []string{"--model", "claude-fable-5-1"}, claudeModelFable},
 		{"older Fable ID is conservative", []string{"--model", "claude-fable-5"}, ""},
@@ -125,6 +128,8 @@ func TestClaudeModelHintUsesOnlyUnambiguousNativeModelFlags(t *testing.T) {
 		{"resume mode is conservative", []string{"--model", "sonnet", "--resume"}, ""},
 		{"variadic option is conservative", []string{"--mcp-config", "servers.json", "--model", "sonnet"}, ""},
 		{"unknown model is conservative", []string{"--model", "future-model"}, ""},
+		{"default alias is conservative", []string{"--model", "default"}, ""},
+		{"opusplan alias is conservative", []string{"--model", "opusplan"}, ""},
 		{"unknown option grammar is conservative", []string{"--future-option", "value", "--model", "sonnet"}, ""},
 		{"unverified short spelling is not inferred", []string{"-m", "sonnet"}, ""},
 		{"missing model value is conservative", []string{"--model"}, ""},
@@ -135,5 +140,34 @@ func TestClaudeModelHintUsesOnlyUnambiguousNativeModelFlags(t *testing.T) {
 				t.Fatalf("claudeModelHint(%q) = %q, want %q", test.args, got, test.want)
 			}
 		})
+	}
+}
+
+func TestClaudeImplicitModelOnlyWithPlainNativeArgs(t *testing.T) {
+	for _, test := range []struct {
+		args []string
+		want claudeModelFamily
+	}{
+		{nil, claudeModelOpus},
+		{[]string{"--dangerously-skip-permissions", "--permission-mode", "bypassPermissions"}, claudeModelOpus},
+		{[]string{"--model", "fable"}, claudeModelFable},
+		{[]string{"--model", "future"}, ""},
+		{[]string{"--model", "fable", "--model", "opus"}, ""},
+		{[]string{"--settings", `{}`}, ""},
+		{[]string{"--cwd", "/tmp"}, ""},
+		{[]string{"--setting-sources", "user"}, ""},
+		{[]string{"--plugin-dir", "/tmp/plugin"}, ""},
+		{[]string{"--fallback-model", "fable"}, ""},
+		{[]string{"--agents", `{}`}, ""},
+		{[]string{"--resume", "abc"}, ""},
+		{[]string{"--continue"}, ""},
+		{[]string{"resume"}, ""},
+		{[]string{"--future-flag"}, ""},
+		{[]string{"prompt", "--model", "fable"}, ""},
+		{[]string{"--", "prompt", "--model=fable"}, ""},
+	} {
+		if got := claudeModelHintWithFallback(test.args, claudeModelOpus); got != test.want {
+			t.Errorf("args %q: got %q, want %q", test.args, got, test.want)
+		}
 	}
 }

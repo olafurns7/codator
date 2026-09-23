@@ -231,17 +231,13 @@ func launch(store *Store, inv invocation) error {
 	if err := signals.ctx.Err(); err != nil {
 		return err
 	}
-	var model claudeModelFamily
-	if inv.provider == "claude" {
-		model = claudeModelHint(inv.args)
-	}
 	if inv.account != "" {
-		return launchExplicit(signals, store, path, inv, accounts, model)
+		return launchExplicit(signals, store, path, inv, accounts)
 	}
-	return launchBest(signals, store, path, inv, accounts, model)
+	return launchBest(signals, store, path, inv, accounts)
 }
 
-func launchExplicit(signals *probeSignalScope, store *Store, path string, inv invocation, accounts []Account, model claudeModelFamily) error {
+func launchExplicit(signals *probeSignalScope, store *Store, path string, inv invocation, accounts []Account) error {
 	var selected *Account
 	for i := range accounts {
 		if accounts[i].Name == inv.account {
@@ -260,7 +256,7 @@ func launchExplicit(signals *probeSignalScope, store *Store, path string, inv in
 		return err
 	}
 	defer lock.Close()
-	q, err := probeAccount(signals.ctx, store, inv.provider, *selected, model)
+	q, err := probeAccount(signals.ctx, store, inv.provider, *selected, launchClaudeModel(inv.provider, inv.args, *selected))
 	if signalErr := signals.ctx.Err(); signalErr != nil {
 		return signalErr
 	}
@@ -284,7 +280,7 @@ type lockedCandidate struct {
 	lock *AccountLock
 }
 
-func launchBest(signals *probeSignalScope, store *Store, path string, inv invocation, accounts []Account, model claudeModelFamily) error {
+func launchBest(signals *probeSignalScope, store *Store, path string, inv invocation, accounts []Account) error {
 	var usable []lockedCandidate
 	var skipped []string
 	for _, account := range accounts {
@@ -305,7 +301,7 @@ func launchBest(signals *probeSignalScope, store *Store, path string, inv invoca
 			skipped = append(skipped, account.Name+": lock failed")
 			continue
 		}
-		q, err := probeAccount(signals.ctx, store, inv.provider, account, model)
+		q, err := probeAccount(signals.ctx, store, inv.provider, account, launchClaudeModel(inv.provider, inv.args, account))
 		if signalErr := signals.ctx.Err(); signalErr != nil {
 			lock.Close()
 			closeCandidateLocks(usable)

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -414,6 +415,115 @@ func TestClaudeCacheReusedAcrossWrapperProcesses(t *testing.T) {
 				t.Fatalf("native launch count=%d, want 1", got)
 			}
 		})
+	}
+}
+
+func TestSavedOpusLaunchUsesCachedQuotaAndKeepsNativeArgs(t *testing.T) {
+	dataHome, home, binDir, account := newFakeClaudeProfile(t)
+	settings := filepath.Join(home, "settings.json")
+	if err := os.WriteFile(settings, []byte(`{"model":"opus[1m]"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(settings, filepath.Join(account.NativeDir, "settings.json")); err != nil {
+		t.Fatal(err)
+	}
+	reset := time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339Nano)
+	payload := json.RawMessage(fmt.Sprintf(`{"subscription_type":"max","rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":10,"resets_at":%q},"seven_day":{"utilization":43,"resets_at":%q},"model_scoped":[{"display_name":"Fable","utilization":100,"resets_at":%q},{"display_name":"Opus","utilization":20,"resets_at":%q}]}}`, reset, reset, reset, reset))
+	installFakeClaude(t, binDir, payload, false, 0, false)
+
+	if code, _, stderr := runCodatorProcess(t, home, dataHome, binDir, []string{"status", "claude"}); code != 0 {
+		t.Fatalf("prime cache code=%d stderr=%q", code, stderr)
+	}
+	args := []string{"--dangerously-skip-permissions", "--permission-mode", "bypassPermissions"}
+	for _, command := range [][]string{append([]string{"claude"}, args...), append([]string{"claude", "--account", "work"}, args...)} {
+		if code, _, stderr := runCodatorProcess(t, home, dataHome, binDir, command); code != 0 {
+			t.Fatalf("saved Opus launch %q code=%d stderr=%q", command, code, stderr)
+		}
+		got, err := os.ReadFile(filepath.Join(filepath.Dir(account.NativeDir), ".launch-argv"))
+		if err != nil || string(got) != strings.Join(args, "\x00")+"\x00" {
+			t.Fatalf("native argv=%q err=%v", got, err)
+		}
+	}
+	if code, _, stderr := runCodatorProcess(t, home, dataHome, binDir, []string{"claude", "--account", "work", "--model", "fable"}); code != 1 || !strings.Contains(stderr, "selected account is ineligible") {
+		t.Fatalf("explicit Fable code=%d stderr=%q", code, stderr)
+	}
+	if count := fakeClaudeCount(t, account, ".probe-count"); count != 1 {
+		t.Fatalf("cached launches started %d probes, want 1", count)
+	}
+	if count := fakeClaudeCount(t, account, ".launch-count"); count != 2 {
+		t.Fatalf("native launches=%d, want 2", count)
+	}
+}
+
+func TestSavedOpusStillBlockedBySharedCap(t *testing.T) {
+	dataHome, home, binDir, account := newFakeClaudeProfile(t)
+	if err := os.WriteFile(filepath.Join(account.NativeDir, "settings.json"), []byte(`{"model":"opus[1m]"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	reset := time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339Nano)
+	payload := json.RawMessage(fmt.Sprintf(`{"subscription_type":"max","rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":10,"resets_at":%q},"seven_day":{"utilization":100,"resets_at":%q},"model_scoped":[{"display_name":"Fable","utilization":100,"resets_at":%q},{"display_name":"Opus","utilization":20,"resets_at":%q}]}}`, reset, reset, reset, reset))
+	installFakeClaude(t, binDir, payload, false, 0, false)
+	if code, _, stderr := runCodatorProcess(t, home, dataHome, binDir, []string{"status", "claude"}); code != 0 {
+		t.Fatalf("prime cache code=%d stderr=%q", code, stderr)
+	}
+	if code, _, stderr := runCodatorProcess(t, home, dataHome, binDir, []string{"claude", "--account", "work"}); code != 1 || !strings.Contains(stderr, "selected account is ineligible") {
+		t.Fatalf("shared cap code=%d stderr=%q", code, stderr)
+	}
+	if got := fakeClaudeCount(t, account, ".probe-count"); got != 1 {
+		t.Fatalf("shared cap repeated probe: %d", got)
+	}
+	if got := fakeClaudeCount(t, account, ".launch-count"); got != 0 {
+		t.Fatalf("shared cap reached native launch: %d", got)
+	}
+}
+
+func TestClaudeSimultaneousProbeBurstUsesOneProviderCall(t *testing.T) {
+	dataHome, _, binDir, account := newFakeClaudeProfile(t)
+	store, err := newStore(dataHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := store.Lock("claude", account.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	installFakeClaude(t, binDir, fullClaudeUsagePayload(time.Now().UTC().Add(24*time.Hour), 10), false, 100*time.Millisecond, false)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+"/usr/bin:/bin")
+	var group sync.WaitGroup
+	results := make(chan error, 8)
+	start := make(chan struct{})
+	for range 8 {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			<-start
+			lock, err := store.Lock("claude", account.Name)
+			if errors.Is(err, ErrAccountBusy) {
+				results <- nil
+				return
+			}
+			if err != nil {
+				results <- err
+				return
+			}
+			defer lock.Close()
+			_, err = store.probeClaudeAccount(context.Background(), account, claudeModelOpus)
+			results <- err
+		}()
+	}
+	close(start)
+	group.Wait()
+	close(results)
+	for err := range results {
+		if err != nil {
+			t.Fatalf("burst probe: %v", err)
+		}
+	}
+	if got := fakeClaudeCount(t, account, ".probe-count"); got != 1 {
+		t.Fatalf("burst started %d provider probes, want 1", got)
 	}
 }
 
@@ -1025,7 +1135,7 @@ func installFakeClaude(t *testing.T, binDir string, payload json.RawMessage, fai
 			script.WriteString("        ln -s /dev/null \"$profile/.claude-usage.tmp\" 2>/dev/null || true\n")
 		}
 		script.WriteString("        printf '%s\\n' " + shellQuote(usageFrame) + "\n        exit 0\n        ;;\n")
-		script.WriteString("    esac\n  done\n  exit 92\nfi\nprintf 'launch\\n' >> \"$profile/.launch-count\"\nexit 0\n")
+		script.WriteString("    esac\n  done\n  exit 92\nfi\nprintf 'launch\\n' >> \"$profile/.launch-count\"\nprintf '%s\\0' \"$@\" > \"$profile/.launch-argv\"\nexit 0\n")
 	}
 	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte(script.String()), 0700); err != nil {
 		t.Fatal(err)
