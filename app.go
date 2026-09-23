@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -231,13 +232,14 @@ func launch(store *Store, inv invocation) error {
 	if err := signals.ctx.Err(); err != nil {
 		return err
 	}
+	defaultModel := sync.OnceValue(func() claudeModelFamily { return claudeRuntimeDefault(signals.ctx, path) })
 	if inv.account != "" {
-		return launchExplicit(signals, store, path, inv, accounts)
+		return launchExplicit(signals, store, path, inv, accounts, defaultModel)
 	}
-	return launchBest(signals, store, path, inv, accounts)
+	return launchBest(signals, store, path, inv, accounts, defaultModel)
 }
 
-func launchExplicit(signals *probeSignalScope, store *Store, path string, inv invocation, accounts []Account) error {
+func launchExplicit(signals *probeSignalScope, store *Store, path string, inv invocation, accounts []Account, defaultModel func() claudeModelFamily) error {
 	var selected *Account
 	for i := range accounts {
 		if accounts[i].Name == inv.account {
@@ -256,7 +258,7 @@ func launchExplicit(signals *probeSignalScope, store *Store, path string, inv in
 		return err
 	}
 	defer lock.Close()
-	q, err := probeAccount(signals.ctx, store, inv.provider, *selected, launchClaudeModel(inv.provider, inv.args, *selected))
+	q, err := probeAccount(signals.ctx, store, inv.provider, *selected, launchClaudeModel(inv.provider, inv.args, *selected, defaultModel))
 	if signalErr := signals.ctx.Err(); signalErr != nil {
 		return signalErr
 	}
@@ -280,7 +282,7 @@ type lockedCandidate struct {
 	lock *AccountLock
 }
 
-func launchBest(signals *probeSignalScope, store *Store, path string, inv invocation, accounts []Account) error {
+func launchBest(signals *probeSignalScope, store *Store, path string, inv invocation, accounts []Account, defaultModel func() claudeModelFamily) error {
 	var usable []lockedCandidate
 	var skipped []string
 	for _, account := range accounts {
@@ -301,7 +303,7 @@ func launchBest(signals *probeSignalScope, store *Store, path string, inv invoca
 			skipped = append(skipped, account.Name+": lock failed")
 			continue
 		}
-		q, err := probeAccount(signals.ctx, store, inv.provider, account, launchClaudeModel(inv.provider, inv.args, account))
+		q, err := probeAccount(signals.ctx, store, inv.provider, account, launchClaudeModel(inv.provider, inv.args, account, defaultModel))
 		if signalErr := signals.ctx.Err(); signalErr != nil {
 			lock.Close()
 			closeCandidateLocks(usable)

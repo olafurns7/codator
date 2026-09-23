@@ -1121,6 +1121,7 @@ func installFakeClaude(t *testing.T, binDir string, payload json.RawMessage, fai
 	usageFrame := `{"type":"control_response","response":{"subtype":"success","request_id":"usage-1","response":` + string(payload) + `}}`
 	var script strings.Builder
 	script.WriteString("#!/bin/sh\nprofile=${CLAUDE_CONFIG_DIR%/native}\n")
+	script.WriteString("bin=${0%/*}\nif [ \"$1\" = \"--version\" ]; then\n  printf 'version\\n' >> \"$bin/.version-count\"\n  if [ -n \"${CLAUDE_CONFIG_DIR:-}\" ]; then exit 92; fi\n  if [ -f \"$bin/.version-fail\" ]; then exit 91; fi\n  if [ -f \"$bin/.version\" ]; then cat \"$bin/.version\"; else printf 'unknown\\n'; fi\n  exit 0\nfi\n")
 	script.WriteString("if [ \"$1\" = \"--print\" ]; then\n  printf 'probe\\n' >> \"$profile/.probe-count\"\n")
 	if fail {
 		script.WriteString("  exit 91\nfi\nprintf 'launch\\n' >> \"$profile/.launch-count\"\nexit 0\n")

@@ -572,6 +572,7 @@ while [ ! -f "$CODATOR_RELEASE_FILE" ]; do :; done
 func writeBlockingClaudeStub(t *testing.T, path string) {
 	t.Helper()
 	script := `#!/bin/sh
+if [ "$1" = --version ]; then printf 'unknown\n'; exit 0; fi
 if [ "$1" = auth ] && [ "$2" = status ]; then
   printf '%s\n' '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"max"}'
   exit 0
@@ -712,6 +713,7 @@ exit 23
 `
 			} else {
 				script = `#!/bin/sh
+if [ "$1" = --version ]; then printf 'unknown\n'; exit 0; fi
 if [ "$1" = --print ]; then
   while IFS= read -r line; do
     case "$line" in
@@ -797,6 +799,7 @@ func TestLaunchClaudeSelectsByModelAndPreservesArgs(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := `#!/bin/sh
+if [ "$1" = --version ]; then printf 'unknown\n'; exit 0; fi
 profile=${CLAUDE_CONFIG_DIR%/native}
 profile=${profile##*/}
 if [ "$1" = --print ]; then
