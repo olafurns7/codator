@@ -191,7 +191,7 @@ for shortcut in $shortcuts; do
 	printf 'Installed %s at %s\n' "$shortcut" "$target"
 done
 if [ -n "$shortcuts" ]; then
-	printf 'Warning: cdx and cdl skip all approval prompts. Use codator codex or codator claude for the normal permission flow.\n'
+	printf 'WARNING: cdx and cdl bypass ALL sandboxing and approval prompts. The agent can run any command as you without asking. Use codator codex or codator claude for the normal permission flow.\n'
 fi
 doctor_supported=false
 if "$destination" --help 2>&1 | awk '

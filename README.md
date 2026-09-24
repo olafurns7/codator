@@ -51,16 +51,17 @@ codator claude --account personal   # or choose a label yourself
 codator status                      # show every account's remaining quota
 ~~~
 
-That's all you need. The rest of this page covers optional shortcuts, MCP servers, and reference details.
+That's all you need. `codator codex` and `codator claude` keep the native CLI's normal sandbox and approval prompts. The rest of this page covers optional shortcuts (which turn all of those off), MCP servers, and reference details.
 
 ## Optional shortcuts: `cdx` and `cdl`
 
-`cdx` and `cdl` are small shell wrappers that start Codex or Claude through Codator **with approvals turned off**:
+> [!WARNING]
+> **`cdx` and `cdl` turn off every safety check.** With no sandbox and no approval prompts, the agent can run any command, read or change any file your user account can reach, use your credentials and SSH keys, and reach the network without asking you first. A malicious repository, prompt injection, MCP server, or plugin gets the same access. Use them only on machines and in repositories you would trust with a shell logged in as you. If you are not sure, use `codator codex` or `codator claude`, which keep the native sandbox and approval prompts.
+
+`cdx` and `cdl` are small shell wrappers that start Codex or Claude through Codator **with every permission bypassed**:
 
 - `cdx` runs `codator codex` with `approval_policy="never"` and `sandbox_mode="danger-full-access"`.
 - `cdl` runs `codator claude` with `--dangerously-skip-permissions --permission-mode bypassPermissions`.
-
-> Only use them in repositories, tools, and plugins you trust. For the normal sandbox and approval prompts, run `codator codex` or `codator claude` directly.
 
 Install them by running the step 2 snippet with one extra variable:
 

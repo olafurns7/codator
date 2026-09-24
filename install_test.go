@@ -304,7 +304,7 @@ esac
 		if got, _ := os.ReadFile(filepath.Join(dir, "cdl")); string(got) != string(foreignCdl) {
 			t.Fatalf("unrelated cdl was overwritten: %q", got)
 		}
-		if !strings.Contains(output, "Skipped cdl") || !strings.Contains(output, "skip all approval prompts") {
+		if !strings.Contains(output, "Skipped cdl") || !strings.Contains(output, "bypass ALL sandboxing and approval prompts") {
 			t.Fatalf("missing skip notice or warning:\n%s", output)
 		}
 
