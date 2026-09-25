@@ -69,8 +69,9 @@ func TestShareConfigLinksProfilesWithoutLosingConfiguration(t *testing.T) {
 	}
 	old, recent := time.Now().Add(-time.Hour), time.Now()
 	alpha, beta, gamma := accounts["alpha"].NativeDir, accounts["beta"].NativeDir, accounts["gamma"].NativeDir
-	// Nothing is shared yet: the newest settings win and the older copy is kept.
-	writeTestFile(t, filepath.Join(alpha, "settings.json"), `{"model":"opus"}`, old)
+	// Nothing is shared yet: the newest settings seed the shared file, and the
+	// older copy is merged into it (shared values win) and kept.
+	writeTestFile(t, filepath.Join(alpha, "settings.json"), `{"model":"opus","env":{"A":"&&"}}`, old)
 	writeTestFile(t, filepath.Join(beta, "settings.json"), `{"model":"sonnet"}`, recent)
 	// Directories merge; identical entries collapse, conflicting ones are kept.
 	writeTestFile(t, filepath.Join(alpha, "skills", "a", "SKILL.md"), "a", old)
@@ -100,8 +101,8 @@ func TestShareConfigLinksProfilesWithoutLosingConfiguration(t *testing.T) {
 			}
 		}
 	}
-	if got := readTestFile(t, filepath.Join(gamma, "settings.json")); got != `{"model":"sonnet"}` {
-		t.Fatalf("shared settings = %q, want the newest profile copy", got)
+	if got := readTestFile(t, filepath.Join(gamma, "settings.json")); got != "{\n  \"env\": {\n    \"A\": \"&&\"\n  },\n  \"model\": \"sonnet\"\n}\n" {
+		t.Fatalf("shared settings = %q, want the newest copy plus the older one's other keys", got)
 	}
 	for name, want := range map[string]string{"a": "a", "b": "b", "same": "same"} {
 		if got := readTestFile(t, filepath.Join(shared, "skills", name, "SKILL.md")); got != want {
@@ -122,7 +123,7 @@ func TestShareConfigLinksProfilesWithoutLosingConfiguration(t *testing.T) {
 	for _, backup := range alphaBackups {
 		switch filepath.Base(backup)[:strings.Index(filepath.Base(backup), ".before-sharing-")] {
 		case "settings.json":
-			if readTestFile(t, backup) != `{"model":"opus"}` {
+			if readTestFile(t, backup) != `{"model":"opus","env":{"A":"&&"}}` {
 				t.Fatal("lost the older settings")
 			}
 		case "agents":
@@ -145,7 +146,7 @@ func TestShareConfigLinksProfilesWithoutLosingConfiguration(t *testing.T) {
 	}
 	for _, want := range []string{
 		"moved claude account beta's settings.json to " + filepath.Join(shared, "settings.json"),
-		"claude account alpha now uses the shared " + filepath.Join(shared, "settings.json") + ";",
+		"merged claude account alpha's settings.json into " + filepath.Join(shared, "settings.json") + ";",
 		"claude account alpha now uses the shared " + filepath.Join(shared, "agents") + ";",
 	} {
 		if !strings.Contains(out.String(), want) {

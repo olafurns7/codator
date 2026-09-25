@@ -918,7 +918,7 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(log), "releases/latest") || strings.Contains(string(log), "/releases/latest/download") || !strings.Contains(string(log), "/download/v0.6.0/install.sh") || strings.Contains(string(log), "/download/v0.6.0/attestations.jsonl") || !strings.Contains(string(log), "/download/v0.6.0/SHA256SUMS") || !strings.Contains(string(log), "/download/v0.6.0/codator-linux-amd64") {
+	if strings.Contains(string(log), "releases/latest") || strings.Contains(string(log), "/releases/latest/download") || !strings.Contains(string(log), "/download/v0.6.1/install.sh") || strings.Contains(string(log), "/download/v0.6.1/attestations.jsonl") || !strings.Contains(string(log), "/download/v0.6.1/SHA256SUMS") || !strings.Contains(string(log), "/download/v0.6.1/codator-linux-amd64") {
 		t.Fatalf("README bootstrap mixed release URLs: %q", log)
 	}
 	assertNoGitHubCLICall(t, filepath.Join(root, name+".gh-log"))
