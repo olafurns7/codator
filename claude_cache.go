@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"math"
 	"os"
+	"slices"
 	"strings"
 	"time"
 )
@@ -632,8 +633,12 @@ func projectClaudeRateLimits(raw json.RawMessage, observedAt time.Time) (*claude
 				return nil, false, err
 			}
 			window, usable := projectClaudeWindow(encoded, true, observedAt)
-			*limits.ModelScoped = append(*limits.ModelScoped, window)
 			complete = complete && usable
+			// Claude can report a model's window in both lists; keep one.
+			// Unrecognized models all read "unknown", so they stay distinct.
+			if window.DisplayName == "unknown" || !slices.ContainsFunc(*limits.ModelScoped, window.same) {
+				*limits.ModelScoped = append(*limits.ModelScoped, window)
+			}
 		}
 		if reason != "" {
 			*limits.ModelScoped = append(*limits.ModelScoped, malformedClaudeWindow(true))

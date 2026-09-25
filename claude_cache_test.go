@@ -1204,3 +1204,19 @@ func runClaudeProbeContext(t *testing.T, store *Store, account Account, model cl
 	defer lock.Close()
 	return store.probeClaudeAccount(ctx, account, model)
 }
+
+func TestClaudeProjectionKeepsOneCopyOfRepeatedModelWindow(t *testing.T) {
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	reset := now.Add(48 * time.Hour).Format(time.RFC3339)
+	payload := json.RawMessage(`{"subscription_type":"pro","rate_limits_available":true,"rate_limits":{` +
+		`"model_scoped":[{"display_name":"Fable","utilization":23,"resets_at":"` + reset + `"}],` +
+		`"limits":[{"kind":"weekly_scoped","percent":23,"scope":{"model":{"display_name":"Fable"}},"resets_at":"` + reset + `"}]}}`)
+	snapshot, _, _, _, _, err := sanitizeClaudeQuotaPayload(payload, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var usage claudeUsageResponse
+	if err := json.Unmarshal(snapshot, &usage); err != nil || len(*usage.RateLimits.ModelScoped) != 1 {
+		t.Fatalf("snapshot = %s, err=%v", snapshot, err)
+	}
+}
