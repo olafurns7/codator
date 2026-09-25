@@ -141,40 +141,52 @@ func (c *mcpConfigClient) readUserConfig(dir *os.Root, account Account) (mcpUser
 	if err != nil {
 		return mcpUserConfig{}, err
 	}
-	var response struct {
-		Layers []struct {
-			Name struct {
-				Type, File string
-				Profile    *string
-			}
-			Version string
-			Config  struct {
-				Servers mcpServers `json:"mcp_servers"`
-				Store   string     `json:"mcp_oauth_credentials_store"`
-			}
-			DisabledReason *string
-		}
-	}
-	if err := c.request("config/read", map[string]bool{"includeLayers": true}, &response); err != nil {
+	raw, version, err := c.userLayer(account)
+	if err != nil {
 		return mcpUserConfig{}, err
 	}
 	_, after, err := readMCPConfigFile(dir)
 	if err != nil || fingerprint != after {
 		return mcpUserConfig{}, errors.New("Codex config changed while being read; retry the command")
 	}
+	var config struct {
+		Servers mcpServers `json:"mcp_servers"`
+		Store   string     `json:"mcp_oauth_credentials_store"`
+	}
+	if len(raw) != 0 && json.Unmarshal(raw, &config) != nil {
+		return mcpUserConfig{}, errors.New("Codex returned an invalid configuration response")
+	}
+	if config.Servers == nil {
+		config.Servers = mcpServers{}
+	}
+	return mcpUserConfig{mcpSharedProfile: mcpSharedProfile{Fingerprint: fingerprint, Servers: config.Servers, Store: config.Store}, Version: version, Data: before}, nil
+}
+
+// userLayer returns the profile's own config.toml as Codex parsed it.
+func (c *mcpConfigClient) userLayer(account Account) (json.RawMessage, string, error) {
+	var response struct {
+		Layers []struct {
+			Name struct {
+				Type, File string
+				Profile    *string
+			}
+			Version        string
+			Config         json.RawMessage
+			DisabledReason *string
+		}
+	}
+	if err := c.request("config/read", map[string]bool{"includeLayers": true}, &response); err != nil {
+		return nil, "", err
+	}
 	for _, layer := range response.Layers {
 		if layer.Name.Type == "user" && layer.Name.Profile == nil && layer.Name.File == filepath.Join(account.NativeDir, "config.toml") {
 			if layer.Version == "" || layer.DisabledReason != nil {
-				return mcpUserConfig{}, errors.New("Codex user configuration is unavailable for sharing")
+				return nil, "", errors.New("Codex user configuration is unavailable for sharing")
 			}
-			servers := layer.Config.Servers
-			if servers == nil {
-				servers = mcpServers{}
-			}
-			return mcpUserConfig{mcpSharedProfile: mcpSharedProfile{Fingerprint: fingerprint, Servers: servers, Store: layer.Config.Store}, Version: layer.Version, Data: before}, nil
+			return layer.Config, layer.Version, nil
 		}
 	}
-	return mcpUserConfig{}, errors.New("Codex did not return the selected profile's user configuration")
+	return nil, "", errors.New("Codex did not return the selected profile's user configuration")
 }
 
 func (c *mcpConfigClient) writeUserMCP(config mcpUserConfig, servers mcpServers) error {
@@ -271,12 +283,12 @@ func mergeSharedMCP(previous mcpSharedState, current map[string]mcpUserConfig) (
 }
 
 func readMCPConfigFile(dir *os.Root) ([]byte, string, error) {
-	file, err := openPrivateFile(dir, "config.toml", os.O_RDONLY, 0600)
+	file, err := openMCPConfigFile(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, "missing", nil
 	}
 	if err != nil {
-		return nil, "", errors.New("Codex config must be a private regular file")
+		return nil, "", err
 	}
 	defer file.Close()
 	data, err := io.ReadAll(io.LimitReader(file, mcpConfigLimit+1))
@@ -285,6 +297,44 @@ func readMCPConfigFile(dir *os.Root) ([]byte, string, error) {
 	}
 	digest := sha256.Sum256(data)
 	return data, hex.EncodeToString(digest[:]), nil
+}
+
+// A linked config.toml is shared from ~/.codex (see shareConfig) and is read
+// through the link, as native Codex does. A profile's own copy stays private.
+func openMCPConfigFile(dir *os.Root) (*os.File, error) {
+	if !mcpConfigLinked(dir) {
+		file, err := openPrivateFile(dir, "config.toml", os.O_RDONLY, 0600)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, errors.New("Codex config must be a private regular file")
+		}
+		return file, err
+	}
+	file, err := os.OpenFile(filepath.Join(dir.Name(), "config.toml"), os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	if info, err := file.Stat(); err != nil || !info.Mode().IsRegular() {
+		file.Close()
+		return nil, errors.New("shared Codex config must be a regular file")
+	}
+	return file, nil
+}
+
+func mcpConfigLinked(dir *os.Root) bool {
+	info, err := dir.Lstat("config.toml")
+	return err == nil && info.Mode()&os.ModeSymlink != 0
+}
+
+// Profiles linked to one shared config.toml synchronize as a single entry,
+// keyed by its path. Account labels never contain a path separator.
+func mcpConfigKey(dir *os.Root, account string) string {
+	if !mcpConfigLinked(dir) {
+		return account
+	}
+	if path, err := filepath.EvalSymlinks(filepath.Join(dir.Name(), "config.toml")); err == nil {
+		return path
+	}
+	return account
 }
 
 func readSharedMCP(root *os.Root) (mcpSharedState, bool, error) {
@@ -337,8 +387,8 @@ func writeSharedMCP(root *os.Root, state mcpSharedState) error {
 	return root.Rename(mcpSharedTemp, mcpSharedFile)
 }
 
-func lockSharedMCP(ctx context.Context, root *os.Root) (*AccountLock, error) {
-	file, err := openPrivateFile(root, mcpSharedLock, os.O_CREATE|os.O_RDWR, 0600)
+func lockStoreFile(ctx context.Context, root *os.Root, name string) (*AccountLock, error) {
+	file, err := openPrivateFile(root, name, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, err
 	}
@@ -401,7 +451,7 @@ func syncSharedMCP(parent context.Context, store *Store, enable bool, out io.Wri
 	}
 	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
-	lock, err := lockSharedMCP(ctx, root)
+	lock, err := lockStoreFile(ctx, root, mcpSharedLock)
 	if err != nil {
 		return false, fmt.Errorf("lock shared MCP configuration: %w", err)
 	}
@@ -446,7 +496,8 @@ func syncSharedMCP(parent context.Context, store *Store, enable bool, out io.Wri
 		return client, nil
 	}
 	current := map[string]mcpUserConfig{}
-	dirty := enable || len(accounts) != len(previous.Profiles)
+	keys := map[string]string{}
+	dirty := enable
 	for _, account := range accounts {
 		if account.Err != nil {
 			return false, fmt.Errorf("cannot share MCP settings with unsafe profile %q", account.Name)
@@ -461,12 +512,17 @@ func syncSharedMCP(parent context.Context, store *Store, enable bool, out io.Wri
 			return false, err
 		}
 		dirs[account.Name] = dir
+		key := mcpConfigKey(dir, account.Name)
+		keys[account.Name] = key
+		if _, seen := current[key]; seen {
+			continue
+		}
 		_, fingerprint, err := readMCPConfigFile(dir)
 		if err != nil {
 			return false, fmt.Errorf("account %q: %w", account.Name, err)
 		}
-		if cached, ok := previous.Profiles[account.Name]; ok && cached.Fingerprint == fingerprint {
-			current[account.Name] = mcpUserConfig{mcpSharedProfile: cached}
+		if cached, ok := previous.Profiles[key]; ok && cached.Fingerprint == fingerprint {
+			current[key] = mcpUserConfig{mcpSharedProfile: cached}
 			if cached.Store != "keyring" || !sameMCPServers(cached.Servers, previous.Servers) {
 				dirty = true
 			}
@@ -481,13 +537,13 @@ func syncSharedMCP(parent context.Context, store *Store, enable bool, out io.Wri
 		if err != nil {
 			return false, fmt.Errorf("read MCP config for %q: %w", account.Name, err)
 		}
-		current[account.Name] = config
+		current[key] = config
 	}
-	if !dirty {
+	if !dirty && len(current) == len(previous.Profiles) {
 		return true, nil
 	}
 	for _, account := range accounts {
-		if current[account.Name].Store != "keyring" {
+		if current[keys[account.Name]].Store != "keyring" {
 			if _, err := dirs[account.Name].Lstat(".credentials.json"); err == nil {
 				return false, fmt.Errorf("account %q has file-based MCP credentials; configure and sign in with the native keyring before enabling sharing", account.Name)
 			} else if !errors.Is(err, os.ErrNotExist) {
@@ -505,8 +561,14 @@ func syncSharedMCP(parent context.Context, store *Store, enable bool, out io.Wri
 		return false, err
 	}
 	updated := 0
+	synced := map[string]bool{}
 	for _, account := range accounts {
-		config := current[account.Name]
+		key := keys[account.Name]
+		if synced[key] {
+			continue
+		}
+		synced[key] = true
+		config := current[key]
 		if config.Store == "keyring" && sameMCPServers(config.Servers, next.Servers) {
 			continue
 		}
@@ -550,7 +612,7 @@ func syncSharedMCP(parent context.Context, store *Store, enable bool, out io.Wri
 			if written.Store != "keyring" || !sameMCPServers(written.Servers, next.Servers) {
 				return errors.New("native Codex did not retain the shared MCP settings")
 			}
-			next.Profiles[account.Name] = written.mcpSharedProfile
+			next.Profiles[key] = written.mcpSharedProfile
 			updated++
 			return nil
 		}()
