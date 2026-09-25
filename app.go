@@ -212,6 +212,9 @@ func collectStatus(store *Store, providers []string, emit func(statusProvider, *
 				continue
 			}
 			q, err := probeAccount(signals.ctx, store, provider, account, "")
+			if provider == "claude" {
+				q.Email = store.claudeEmail(account)
+			}
 			now := time.Now()
 			details := statusDetails{Windows: codexStatusWindows(q.Windows)}
 			var claudeData claudeStatusData

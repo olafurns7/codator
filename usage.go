@@ -14,6 +14,7 @@ type quota struct {
 	Reason       string
 	Windows      []usageWindow // reported limits, shown by status
 	ResetCredits int           // Codex rate-limit resets the account can redeem
+	Email        string        // signed-in address, display only
 }
 
 type usageWindow struct {

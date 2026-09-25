@@ -43,6 +43,7 @@ type rpcResponse struct {
 type codexAccountResponse struct {
 	Account *struct {
 		Type     string `json:"type"`
+		Email    string `json:"email"`
 		PlanType string `json:"planType"`
 	} `json:"account"`
 }
@@ -174,13 +175,14 @@ func probeCodexContext(ctx context.Context, account Account) (quota, error) {
 	if json.Unmarshal(accountResult, &accountInfo) != nil || accountInfo.Account == nil {
 		return quota{Reason: "subscription account is unknown"}, errors.New("Codex account is not a verified subscription")
 	}
+	email := accountInfo.Account.Email
 	if accountInfo.Account.Type != "chatgpt" {
-		return quota{Known: true, Reason: "account is not a ChatGPT subscription"}, nil
+		return quota{Known: true, Reason: "account is not a ChatGPT subscription", Email: email}, nil
 	}
 	if !codexSubscriptionPlan(accountInfo.Account.PlanType) {
-		return quota{Reason: "account plan is not a verified subscription"}, nil
+		return quota{Reason: "account plan is not a verified subscription", Email: email}, nil
 	}
-	verified := quota{Subscription: true}
+	verified := quota{Subscription: true, Email: email}
 	if err := sendRPC(encoder, "account/rateLimits/read", 3, nil); err != nil {
 		verified.Reason = "Codex usage check failed"
 		return verified, nil
@@ -205,6 +207,7 @@ func probeCodexContext(ctx context.Context, account Account) (quota, error) {
 	default:
 		q = codexQuotaFromUsage(usage.OrdinaryUsageAllowed, usage)
 	}
+	q.Email = email
 	q.Windows = codexUsageWindows(usage)
 	var credits struct{ AvailableCount int }
 	if json.Unmarshal(usage.ResetCredits, &credits) == nil {

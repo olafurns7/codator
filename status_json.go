@@ -25,6 +25,7 @@ type statusProvider struct {
 type statusAccount struct {
 	Provider        string                 `json:"provider"`
 	Account         string                 `json:"account"`
+	Email           string                 `json:"email,omitempty"`
 	State           string                 `json:"state"`
 	Launchable      bool                   `json:"launchable"`
 	HeadroomPercent *float64               `json:"headroom_percent"`
@@ -99,7 +100,11 @@ func renderStatusEvent(out io.Writer, provider statusProvider, account *statusAc
 	if text == "" {
 		text = quotaStatus(account.quota, account.probeErr, account.now)
 	}
-	fmt.Fprintf(out, "%s %s: %s\n", account.Provider, account.Account, text)
+	name := account.Account
+	if account.Email != "" {
+		name += " <" + account.Email + ">"
+	}
+	fmt.Fprintf(out, "%s %s: %s\n", account.Provider, name, text)
 }
 
 func quotaStatusAccount(provider, account string, q quota, probeErr error, now time.Time, details statusDetails) statusAccount {
@@ -142,6 +147,7 @@ func quotaStatusAccount(provider, account string, q quota, probeErr error, now t
 	row := statusAccount{
 		Provider:        provider,
 		Account:         account,
+		Email:           q.Email,
 		State:           state,
 		Launchable:      q.Eligible,
 		HeadroomPercent: headroom,
