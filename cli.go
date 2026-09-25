@@ -12,13 +12,14 @@ const usage = `Usage:
   codator mcp login SERVER [--account NAME] [--timeout 30m] [--scopes SCOPE,...]
   codator mcp share
   codator doctor [codex|claude]
-  codator status [codex|claude]
+  codator status [--json] [codex|claude]
   codator codex [--account NAME] [native arguments]
   codator claude [--account NAME] [native arguments]
   codator --help
 
 For launch, Codator consumes only a leading --account NAME pair. Every
 remaining argument, including --, is passed unchanged to the native CLI.
+Status accepts --json before or after its optional provider.
 MCP login uses the current profile, --account NAME, or any shared profile.
 It waits 30 minutes and accepts a pasted browser callback URL on stdin.
 Use mcp share to share MCP settings and keyring logins across Codex accounts.
@@ -28,16 +29,18 @@ Examples:
   codator doctor codex
   codator mcp login posthog --account personal
   codator status
+  codator status --json
   codator claude --account work --model sonnet`
 
 var errUsage = errors.New("invalid command")
 
 type invocation struct {
-	verb     string
-	provider string
-	account  string
-	args     []string
-	mcp      *mcpLoginOptions
+	verb       string
+	provider   string
+	account    string
+	args       []string
+	jsonOutput bool
+	mcp        *mcpLoginOptions
 }
 
 func parseInvocation(args []string) (invocation, error) {
@@ -59,13 +62,18 @@ func parseInvocation(args []string) (invocation, error) {
 		}
 		return invocation{verb: "login", provider: args[1], account: args[2], args: args[4:]}, nil
 	case "status":
-		if len(args) == 1 {
-			return invocation{verb: "status"}, nil
+		inv := invocation{verb: "status"}
+		for _, arg := range args[1:] {
+			switch {
+			case arg == "--json" && !inv.jsonOutput:
+				inv.jsonOutput = true
+			case validProvider(arg) && inv.provider == "":
+				inv.provider = arg
+			default:
+				return invocation{}, fmt.Errorf("%w: status accepts only --json, codex or claude", errUsage)
+			}
 		}
-		if len(args) == 2 && validProvider(args[1]) {
-			return invocation{verb: "status", provider: args[1]}, nil
-		}
-		return invocation{}, fmt.Errorf("%w: status accepts only codex or claude", errUsage)
+		return inv, nil
 	case "doctor":
 		if len(args) == 1 {
 			return invocation{verb: "doctor"}, nil

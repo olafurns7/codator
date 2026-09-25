@@ -85,7 +85,7 @@ Both helpers accept a leading `--account NAME` and pass everything else through.
 codator login codex|claude NAME [-- native-login-options]
 codator codex  [--account NAME] [native arguments]
 codator claude [--account NAME] [native arguments]
-codator status [codex|claude]
+codator status [--json] [codex|claude]
 codator doctor [codex|claude]
 codator mcp login SERVER [--account NAME] [--timeout 30m] [--scopes a,b]
 codator mcp share
@@ -98,6 +98,8 @@ codator codex --account personal exec -- "explain this repository"
 ~~~
 
 `doctor` is read-only. It checks that the native CLI and, on Linux, the Codex sandbox work. It never touches accounts or credentials.
+
+Add `--json` to `codator status` for one versioned JSON document with UTC timestamps. The flag can appear before or after the optional provider.
 
 ## How accounts are chosen
 

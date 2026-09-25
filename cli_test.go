@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 )
@@ -81,6 +82,36 @@ func TestParseInvocation(t *testing.T) {
 	}
 	if _, err := parseInvocation([]string{"doctor", "both"}); err == nil {
 		t.Fatal("accepted an invalid doctor provider")
+	}
+}
+
+func TestParseStatusJSONArguments(t *testing.T) {
+	for _, test := range []struct {
+		args     []string
+		provider string
+		json     bool
+	}{
+		{args: []string{"status"}},
+		{args: []string{"status", "--json"}, json: true},
+		{args: []string{"status", "--json", "codex"}, provider: "codex", json: true},
+		{args: []string{"status", "claude", "--json"}, provider: "claude", json: true},
+		{args: []string{"status", "codex"}, provider: "codex"},
+	} {
+		got, err := parseInvocation(test.args)
+		if err != nil || got.verb != "status" || got.provider != test.provider || got.jsonOutput != test.json {
+			t.Errorf("parseInvocation(%q) = %+v, %v", test.args, got, err)
+		}
+	}
+	for _, args := range [][]string{
+		{"status", "--yaml"},
+		{"status", "both"},
+		{"status", "--json", "--json"},
+		{"status", "codex", "claude"},
+		{"status", "claude", "--unknown"},
+	} {
+		if _, err := parseInvocation(args); !errors.Is(err, errUsage) {
+			t.Errorf("parseInvocation(%q) error = %v, want errUsage", args, err)
+		}
 	}
 }
 
