@@ -1,6 +1,10 @@
 package main
 
-import "math"
+import (
+	"fmt"
+	"math"
+	"time"
+)
 
 type quota struct {
 	Headroom     float64
@@ -8,6 +12,14 @@ type quota struct {
 	Known        bool
 	Subscription bool
 	Reason       string
+	Windows      []usageWindow // reported limits, shown by status
+	ResetCredits int           // Codex rate-limit resets the account can redeem
+}
+
+type usageWindow struct {
+	Label    string
+	Used     float64
+	ResetsAt time.Time // zero when not reported
 }
 
 // Subscription is verified identity; Known and Eligible describe quota only.
@@ -61,4 +73,39 @@ func bestCandidate(accounts []candidate) (candidate, bool) {
 		}
 	}
 	return best, found
+}
+
+// windowText says what is left in a limit window and when it refills.
+func windowText(used float64, reset, now time.Time) string {
+	text := fmt.Sprintf("%.1f%% remaining", 100-used)
+	if used >= 100 {
+		text = "0.0% remaining (exhausted)"
+	}
+	if reset.After(now) {
+		text += ", resets " + whenText(reset, now)
+	}
+	return text
+}
+
+// whenText shows a time in the viewer's zone and how far it is from now.
+func whenText(t, now time.Time) string {
+	clock := t.In(now.Location()).Format("Mon Jan 2 15:04")
+	if t.After(now) {
+		return clock + " (in " + durationText(t.Sub(now)) + ")"
+	}
+	return clock + " (" + durationText(now.Sub(t)) + " ago)"
+}
+
+func durationText(d time.Duration) string {
+	minutes := int(d / time.Minute)
+	switch {
+	case minutes < 1:
+		return "<1m"
+	case minutes < 60:
+		return fmt.Sprintf("%dm", minutes)
+	case minutes < 24*60:
+		return fmt.Sprintf("%dh %dm", minutes/60, minutes%60)
+	default:
+		return fmt.Sprintf("%dd %dh", minutes/(24*60), minutes%(24*60)/60)
+	}
 }

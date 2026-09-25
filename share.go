@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -129,21 +130,29 @@ func shareConfigItem(ctx context.Context, provider string, accounts []Account, n
 		if _, err := os.Lstat(backup); err == nil {
 			return fmt.Errorf("%s already exists", backup)
 		}
-		note := ""
-		if codexConfig {
-			mergeErr, err := keepCodexConfig(ctx, c.account, backup, target)
-			if err != nil {
-				return err
-			}
-			if mergeErr == nil {
-				fmt.Fprintf(out, "codator: merged %s account %s's %s into %s; its original is saved as %s\n", provider, c.account.Name, name, target, backup)
-				continue
-			}
-			note = fmt.Sprintf(" (not merged: %v)", mergeErr)
-		} else if err := os.Rename(c.path, backup); err != nil {
+		// Settings files are merged; other differing items are only saved.
+		mergeable := codexConfig || strings.HasSuffix(name, ".json")
+		var mergeErr error
+		switch {
+		case codexConfig:
+			mergeErr, err = keepCodexConfig(ctx, c.account, backup, target)
+		case mergeable:
+			mergeErr = mergeJSONFile(c.path, target)
+			err = os.Rename(c.path, backup)
+		default:
+			err = os.Rename(c.path, backup)
+		}
+		if err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "codator: %s account %s now uses the shared %s; its differing copy is saved as %s%s\n", provider, c.account.Name, target, backup, note)
+		switch {
+		case mergeable && mergeErr == nil:
+			fmt.Fprintf(out, "codator: merged %s account %s's %s into %s; its original is saved as %s\n", provider, c.account.Name, name, target, backup)
+		case mergeable:
+			fmt.Fprintf(out, "codator: %s account %s now uses the shared %s; its differing copy is saved as %s (not merged: %v)\n", provider, c.account.Name, target, backup, mergeErr)
+		default:
+			fmt.Fprintf(out, "codator: %s account %s now uses the shared %s; its differing copy is saved as %s\n", provider, c.account.Name, target, backup)
+		}
 	}
 	if _, err := os.Lstat(target); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -286,6 +295,71 @@ func codexUserConfig(client *mcpConfigClient, account Account) (map[string]any, 
 		return nil, "", errors.New("Codex returned an invalid configuration")
 	}
 	return config, version, nil
+}
+
+// mergeJSONFile adds what the shared JSON file lacks from a profile's copy.
+// It rewrites the file a shared link points to, so the link survives.
+func mergeJSONFile(own, target string) error {
+	ownValue, err := readJSONFile(own)
+	if err != nil {
+		return err
+	}
+	sharedValue, err := readJSONFile(target)
+	if err != nil {
+		return err
+	}
+	merged := mergeMissing(sharedValue, ownValue)
+	if sameJSON(merged, sharedValue) {
+		return nil
+	}
+	var data bytes.Buffer
+	encoder := json.NewEncoder(&data)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(merged); err != nil {
+		return err
+	}
+	path, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".codator-")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(temp.Name()) // no-op once renamed
+	_, err = temp.Write(data.Bytes())
+	if err == nil {
+		err = temp.Chmod(info.Mode().Perm())
+	}
+	if err == nil {
+		err = temp.Sync()
+	}
+	if closeErr := temp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(temp.Name(), path)
+}
+
+func readJSONFile(path string) (any, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber() // keep integers exact
+	if decoder.Decode(&value) != nil || decoder.Decode(new(any)) != io.EOF {
+		return nil, fmt.Errorf("%s is not plain JSON", path)
+	}
+	return value, nil
 }
 
 // mergeMissing adds what shared lacks from own, recursing into tables. A value

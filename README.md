@@ -23,7 +23,7 @@ On Linux, Codex also needs `bubblewrap` for its sandbox: `sudo apt install bubbl
 ~~~sh
 (
 set -eu
-version=${CODATOR_VERSION:-v0.6.0}
+version=${CODATOR_VERSION:-v0.6.1}
 installer=$(mktemp)
 trap 'rm -f "$installer"' EXIT
 curl -fsSL -o "$installer" "https://github.com/olafurns7/codator/releases/download/$version/install.sh"
@@ -101,7 +101,7 @@ codator codex --account personal exec -- "explain this repository"
 
 ## How accounts are chosen
 
-Automatic selection skips accounts that are busy, exhausted, spend-capped, not on a subscription, or have unknown quota. `codator status` shows the reason for each account:
+Automatic selection skips accounts that are busy, exhausted, spend-capped, not on a subscription, or have unknown quota. For each account, `codator status` lists every usage limit with how much remains and when it resets, in local time. An exhausted Codex account shows when it becomes usable again. The status also shows why an account is skipped:
 
 - **busy:** another Codator command, such as a login, holds that profile's lock.
 - **unknown:** Codator could not read reliable usage data. Automatic selection skips it. An explicit `--account` still launches if the subscription is verified.
@@ -118,7 +118,7 @@ A setting you change under one account applies to every account, and to the plai
 - **Claude**, from `~/.claude`: `settings.json`, `CLAUDE.md`, `keybindings.json`, and the `agents`, `commands`, `output-styles`, `routines`, `rules`, `skills`, `themes`, and `workflows` folders.
 - **Codex**, from `~/.codex`: `config.toml`, `AGENTS.md`, `AGENTS.override.md`, `hooks.json`, and the `prompts`, `rules`, `skills`, and `themes` folders.
 
-Codator checks the links before each launch and login, and adds any that are missing. When a profile has its own copy of an item, Codator moves it into the shared folder if nothing is there yet. If several accounts have a copy, the most recently changed one wins. Files from a profile's folder that the shared folder lacks are moved into it, and identical files are dropped. A copy that differs is saved inside the profile as `NAME.before-sharing-TIMESTAMP`, and Codator prints its path, so no configuration is lost. A differing Codex `config.toml` is also merged: Codex adds the entries the shared file lacks, such as trusted folders, MCP servers, and hook trust, which Codex records separately for each profile. A setting present in both keeps the shared value. To keep an item separate for one account, replace its link with your own symlink. Codator leaves symlinks alone.
+Codator checks the links before each launch and login, and adds any that are missing. When a profile has its own copy of an item, Codator moves it into the shared folder if nothing is there yet. If several accounts have a copy, the most recently changed one wins. Files from a profile's folder that the shared folder lacks are moved into it, and identical files are dropped. A copy that differs is saved inside the profile as `NAME.before-sharing-TIMESTAMP`, and Codator prints its path, so no configuration is lost. Differing settings files, such as `settings.json`, `hooks.json`, and `config.toml`, are also merged key by key. Codator adds the settings the shared file lacks, and a setting present in both keeps the shared value. Codex's own editor merges `config.toml`, which carries over trusted folders, MCP servers, and hook trust, which Codex records separately for each profile. To keep an item separate for one account, replace its link with your own symlink. Codator leaves symlinks alone.
 
 Codator never shares a Codex `config.toml` that sets `forced_login_method` or `forced_chatgpt_workspace_id`. Codex signs out, and revokes, any account that does not match those settings.
 

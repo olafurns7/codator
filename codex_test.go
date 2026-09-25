@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCodexQuotaUsesAllBucketsAndLegacyFallback(t *testing.T) {
@@ -298,6 +299,9 @@ while IFS= read -r line; do
         if [ "__MODE__" = unknown ]; then
           response=$(printf '%s\n' "$response" | sed 's/"spendControlReached":false/"spendControlReached":null/g')
         fi
+        if [ "__MODE__" = exhausted ]; then
+          response='{"id":3,"result":{"ordinaryUsageAllowed":false,"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":4102444800},"secondary":null,"spendControlReached":false,"rateLimitReachedType":"rate_limit_reached"},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":null,"primary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":4102444800},"secondary":null,"spendControlReached":false},"codex_spark":{"limitId":"codex_spark","limitName":"GPT-5.3-Codex-Spark","primary":{"usedPercent":25,"windowDurationMins":300,"resetsAt":4102444800},"secondary":null,"spendControlReached":false}},"rateLimitResetCredits":{"availableCount":1,"credits":[]}}}'
+        fi
         printf '%s\n' "$response"
       fi
       ;;
@@ -321,6 +325,27 @@ done
 	quota, err := probeCodex(account)
 	if err != nil || !quota.Eligible || quota.Headroom != 40 {
 		t.Fatalf("quota=%+v err=%v", quota, err)
+	}
+	// Status shows every window with its reset, in the viewer's zone.
+	now := time.Date(2099, 12, 30, 12, 0, 0, 0, time.UTC)
+	want := "40.0% headroom\n" +
+		"  5-hour limit: 80.0% remaining, resets Fri Jan 1 00:00 (in 1d 12h)\n" +
+		"  Weekly limit: 40.0% remaining, resets Fri Jan 1 00:00 (in 1d 12h)"
+	if got := quotaStatus(quota, nil, now); got != want {
+		t.Fatalf("status=%q, want %q", got, want)
+	}
+	// An exhausted account keeps its windows, so status says when it returns.
+	writeStub("exhausted")
+	quota, err = probeCodex(account)
+	if err != nil || !quota.Subscription || !quota.Known || quota.Eligible {
+		t.Fatalf("exhausted quota=%+v err=%v", quota, err)
+	}
+	want = "limit reached until Fri Jan 1 00:00 (in 1d 12h)\n" +
+		"  Weekly limit: 0.0% remaining (exhausted), resets Fri Jan 1 00:00 (in 1d 12h)\n" +
+		"  GPT-5.3-Codex-Spark 5-hour limit: 75.0% remaining, resets Fri Jan 1 00:00 (in 1d 12h)\n" +
+		"  Rate-limit resets available in Codex: 1"
+	if got := quotaStatus(quota, nil, now); got != want {
+		t.Fatalf("status=%q, want %q", got, want)
 	}
 	writeStub("error")
 	quota, err = probeCodex(account)

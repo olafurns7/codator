@@ -114,10 +114,10 @@ func claudeStatus(state claudeProbeCache, found bool, readErr error, now time.Ti
 		if denial.ObservedAt.IsZero() || denial.ObservedAt.After(now) || !denial.ResetsAt.After(now) || claudeStatusDenialShown(limits, denial) {
 			continue
 		}
-		status = append(status, fmt.Sprintf("known exhausted: %s (last observed at %s)",
-			claudeStatusDenialScope(state, denial), denial.ObservedAt.UTC().Format(time.RFC3339Nano)))
+		status = append(status, fmt.Sprintf("known exhausted: %s until %s (last observed at %s)",
+			claudeStatusDenialScope(state, denial), whenText(denial.ResetsAt, now), whenText(denial.ObservedAt, now)))
 	}
-	return "last observed at " + state.ObservedAt.UTC().Format(time.RFC3339Nano) + "\n  " + strings.Join(status, "\n  ")
+	return "last observed at " + whenText(state.ObservedAt, now) + "\n  " + strings.Join(status, "\n  ")
 }
 
 func claudeStatusWindow(window *claudeUsageWindow, now time.Time) string {
@@ -137,28 +137,27 @@ func claudeStatusWindow(window *claudeUsageWindow, now time.Time) string {
 	if reset == nil && *window.Utilization > 0 {
 		return "unavailable (reset time unknown)"
 	}
-	remaining := 100 - *window.Utilization
-	if remaining == 0 {
-		return "0.0% remaining (exhausted)"
+	var resetAt time.Time
+	if reset != nil {
+		resetAt = *reset
 	}
-	return fmt.Sprintf("%.1f%% remaining", remaining)
+	return windowText(*window.Utilization, resetAt, now)
 }
 
 func claudeStatusUnavailable(state claudeProbeCache, reason string, now time.Time) string {
 	if !state.ObservedAt.IsZero() {
-		reason += "; last observed at " + state.ObservedAt.UTC().Format(time.RFC3339Nano)
+		reason += "; last observed at " + whenText(state.ObservedAt, now)
 	}
 	parts := []string{"usage unavailable (" + reason + ")"}
 	for _, denial := range state.Denials {
 		if denial.ObservedAt.IsZero() || denial.ObservedAt.After(now) || !denial.ResetsAt.After(now) {
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("known exhausted: %s (last observed at %s)",
-			claudeStatusDenialScope(state, denial),
-			denial.ObservedAt.UTC().Format(time.RFC3339Nano)))
+		parts = append(parts, fmt.Sprintf("known exhausted: %s until %s (last observed at %s)",
+			claudeStatusDenialScope(state, denial), whenText(denial.ResetsAt, now), whenText(denial.ObservedAt, now)))
 	}
 	if state.NextProbeAt.After(now) {
-		parts = append(parts, "probe cooldown until "+state.NextProbeAt.UTC().Format(time.RFC3339Nano))
+		parts = append(parts, "probe cooldown until "+whenText(state.NextProbeAt, now))
 	}
 	return strings.Join(parts, "; ")
 }
