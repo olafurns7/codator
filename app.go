@@ -41,6 +41,9 @@ func execute(inv invocation) (int, error) {
 		if inv.provider == "" {
 			providers = []string{"codex", "claude"}
 		}
+		if inv.jsonOutput {
+			return 0, statusJSON(store, os.Stdout, providers...)
+		}
 		return 0, status(store, os.Stdout, providers...)
 	case "launch":
 		return 0, launch(store, inv)
@@ -141,57 +144,102 @@ func syncSharedMCPForSession(ctx context.Context, store *Store, args []string, o
 }
 
 func status(store *Store, out io.Writer, providers ...string) error {
+	_, err := collectStatus(store, providers, func(provider statusProvider, account *statusAccount) {
+		renderStatusEvent(out, provider, account)
+	})
+	return err
+}
+
+func collectStatus(store *Store, providers []string, emit func(statusProvider, *statusAccount)) (statusReport, error) {
+	report := statusReport{
+		SchemaVersion: 1,
+		GeneratedAt:   statusUTCSecond(time.Now()),
+		Providers:     make([]statusProvider, 0, len(providers)),
+		Accounts:      make([]statusAccount, 0),
+	}
 	signals := newProbeSignalScope()
 	defer signals.stopListening()
 	for _, provider := range providers {
 		if err := signals.ctx.Err(); err != nil {
-			return err
+			return report, err
 		}
 		accounts, err := store.Accounts(provider)
 		if err != nil {
-			fmt.Fprintf(out, "%s: unavailable (%v)\n", provider, err)
+			providerStatus := statusProvider{Provider: provider, Status: "unavailable", Error: err.Error()}
+			report.Providers = append(report.Providers, providerStatus)
+			if emit != nil {
+				emit(providerStatus, nil)
+			}
 			continue
 		}
 		if len(accounts) == 0 {
-			fmt.Fprintf(out, "%s: no accounts enrolled\n", provider)
+			providerStatus := statusProvider{Provider: provider, Status: "no_accounts"}
+			report.Providers = append(report.Providers, providerStatus)
+			if emit != nil {
+				emit(providerStatus, nil)
+			}
 			continue
 		}
+		providerStatus := statusProvider{Provider: provider, Status: "ok"}
+		report.Providers = append(report.Providers, providerStatus)
 		for _, account := range accounts {
 			if err := signals.ctx.Err(); err != nil {
-				return err
+				return report, err
 			}
 			if account.Err != nil {
-				fmt.Fprintf(out, "%s %s: unknown (unsafe profile directory)\n", provider, account.Name)
+				row := unavailableStatusAccount(provider, account.Name, "unknown", "unsafe profile directory", "unknown (unsafe profile directory)")
+				report.Accounts = append(report.Accounts, row)
+				if emit != nil {
+					emit(providerStatus, &row)
+				}
 				continue
 			}
 			lock, err := store.Lock(provider, account.Name)
 			if errors.Is(err, ErrAccountBusy) {
-				fmt.Fprintf(out, "%s %s: busy\n", provider, account.Name)
+				row := unavailableStatusAccount(provider, account.Name, "busy", "", "busy")
+				report.Accounts = append(report.Accounts, row)
+				if emit != nil {
+					emit(providerStatus, &row)
+				}
 				continue
 			}
 			if err != nil {
-				fmt.Fprintf(out, "%s %s: unknown (cannot lock profile)\n", provider, account.Name)
+				row := unavailableStatusAccount(provider, account.Name, "unknown", "cannot lock profile", "unknown (cannot lock profile)")
+				report.Accounts = append(report.Accounts, row)
+				if emit != nil {
+					emit(providerStatus, &row)
+				}
 				continue
 			}
 			q, err := probeAccount(signals.ctx, store, provider, account, "")
 			now := time.Now()
-			var claudeUsage string
+			details := statusDetails{Windows: codexStatusWindows(q.Windows)}
+			var claudeData claudeStatusData
 			if provider == "claude" {
 				state, found, cacheErr := store.readClaudeProbeCache(account, now.UTC())
-				claudeUsage = claudeStatus(state, found, cacheErr, now)
+				claudeData = claudeStatusDetails(state, found, cacheErr, now)
+				details = statusDetails{
+					Windows:        claudeData.Windows,
+					KnownExhausted: claudeData.KnownExhausted,
+					ObservedAt:     statusTime(state.ObservedAt),
+					NextProbeAt:    statusFutureTime(state.NextProbeAt, now),
+				}
 			}
 			lock.Close()
 			if signalErr := signals.ctx.Err(); signalErr != nil {
-				return signalErr
+				return report, signalErr
 			}
+			row := quotaStatusAccount(provider, account.Name, q, err, now, details)
 			if provider == "claude" {
-				fmt.Fprintf(out, "%s %s: %s\n", provider, account.Name, claudeUsage)
-			} else {
-				fmt.Fprintf(out, "%s %s: %s\n", provider, account.Name, quotaStatus(q, err, now))
+				row.claudeText = claudeData.Text
+			}
+			report.Accounts = append(report.Accounts, row)
+			if emit != nil {
+				emit(providerStatus, &row)
 			}
 		}
 	}
-	return nil
+	return report, nil
 }
 
 func quotaStatus(q quota, err error, now time.Time) string {
