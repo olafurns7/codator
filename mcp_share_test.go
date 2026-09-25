@@ -73,14 +73,19 @@ func TestMCPConfigNativeChild(t *testing.T) {
 					_ = encoder.Encode(map[string]any{"id": request.ID, "error": map[string]any{"code": -32000, "message": "synthetic credential must not be printed"}})
 					continue
 				}
-				if len(params.Edits) != 2 {
-					os.Exit(95)
-				}
+				// MCP sync writes exactly its two keys; a sharing merge writes others.
+				mcpEdits := 0
 				for _, edit := range params.Edits {
-					if edit.MergeStrategy != "replace" || (edit.KeyPath != "mcp_servers" && edit.KeyPath != "mcp_oauth_credentials_store") {
+					if edit.MergeStrategy != "replace" {
 						os.Exit(96)
 					}
+					if edit.KeyPath == "mcp_servers" || edit.KeyPath == "mcp_oauth_credentials_store" {
+						mcpEdits++
+					}
 					values[edit.KeyPath] = edit.Value
+				}
+				if len(params.Edits) == 0 || mcpEdits != 0 && (mcpEdits != 2 || len(params.Edits) != 2) {
+					os.Exit(95)
 				}
 				updated, _ := json.Marshal(values)
 				if os.WriteFile(configPath, updated, 0600) != nil {
@@ -344,5 +349,52 @@ func TestSharedMCPFailureWarnsOrdinarySessionsOnly(t *testing.T) {
 				t.Fatalf("cancellation did not stop the session: %v", err)
 			}
 		})
+	}
+}
+
+func TestSharedMCPTreatsLinkedConfigAsOneProfile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	store, accounts := setupMCPSharingTest(t)
+	first := readMCPSharingFixture(t, accounts[0])
+	first["mcp_servers"] = map[string]any{"example": map[string]any{"url": "https://mcp.example.test/mcp"}}
+	writeMCPSharingFixture(t, accounts[0], first)
+	runSharedMCPSync(t, store, true)
+	// The plain Codex config that becomes shared has no MCP servers yet. Linking
+	// must not read as every profile deleting the shared servers.
+	shared := filepath.Join(home, ".codex", "config.toml")
+	writeTestFile(t, shared, `{"model":"plain"}`, time.Now())
+	if err := shareConfig(context.Background(), store, "codex", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	runSharedMCPSync(t, store, false)
+	var config map[string]any
+	if err := json.Unmarshal([]byte(readTestFile(t, shared)), &config); err != nil {
+		t.Fatal(err)
+	}
+	if config["model"] != "plain" || config["mcp_oauth_credentials_store"] != "keyring" || !reflect.DeepEqual(config["mcp_servers"], first["mcp_servers"]) {
+		t.Fatalf("shared config = %+v", config)
+	}
+	for _, account := range accounts {
+		if target, err := os.Readlink(filepath.Join(account.NativeDir, "config.toml")); err != nil || target != shared {
+			t.Fatalf("%s config link = %q, %v", account.Name, target, err)
+		}
+		if auth := readTestFile(t, filepath.Join(account.NativeDir, "auth.json")); auth != "isolated subscription: "+account.Name {
+			t.Fatal("modified subscription credentials")
+		}
+	}
+	// An edit under any account is one profile's edit, not a conflict.
+	edited := readMCPSharingFixture(t, accounts[2])
+	edited["mcp_servers"].(map[string]any)["second"] = map[string]any{"url": "https://second.example.test/mcp"}
+	writeMCPSharingFixture(t, accounts[2], edited)
+	runSharedMCPSync(t, store, false)
+	root, err := os.OpenRoot(store.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	state, _, err := readSharedMCP(root)
+	if err != nil || len(state.Profiles) != 1 || len(state.Servers) != 2 {
+		t.Fatalf("shared MCP state = %+v, %v", state, err)
 	}
 }

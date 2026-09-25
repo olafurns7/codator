@@ -23,7 +23,7 @@ On Linux, Codex also needs `bubblewrap` for its sandbox: `sudo apt install bubbl
 ~~~sh
 (
 set -eu
-version=${CODATOR_VERSION:-v0.5.4}
+version=${CODATOR_VERSION:-v0.6.0}
 installer=$(mktemp)
 trap 'rm -f "$installer"' EXIT
 curl -fsSL -o "$installer" "https://github.com/olafurns7/codator/releases/download/$version/install.sh"
@@ -111,6 +111,19 @@ Codator counts Claude's session and weekly limits separately from its model-spec
 
 Claude usage is cached on disk per account for 5 minutes after success and 15 minutes after failed or unknown probes; account locks and probe reservations prevent duplicate concurrent probes.
 
+## Shared configuration
+
+A setting you change under one account applies to every account, and to the plain `claude` and `codex` commands. Codator links these items in each profile to the native default folder:
+
+- **Claude**, from `~/.claude`: `settings.json`, `CLAUDE.md`, `keybindings.json`, and the `agents`, `commands`, `output-styles`, `routines`, `rules`, `skills`, `themes`, and `workflows` folders.
+- **Codex**, from `~/.codex`: `config.toml`, `AGENTS.md`, `AGENTS.override.md`, `hooks.json`, and the `prompts`, `rules`, `skills`, and `themes` folders.
+
+Codator checks the links before each launch and login, and adds any that are missing. When a profile has its own copy of an item, Codator moves it into the shared folder if nothing is there yet. If several accounts have a copy, the most recently changed one wins. Files from a profile's folder that the shared folder lacks are moved into it, and identical files are dropped. A copy that differs is saved inside the profile as `NAME.before-sharing-TIMESTAMP`, and Codator prints its path, so no configuration is lost. A differing Codex `config.toml` is also merged: Codex adds the entries the shared file lacks, such as trusted folders, MCP servers, and hook trust, which Codex records separately for each profile. A setting present in both keeps the shared value. To keep an item separate for one account, replace its link with your own symlink. Codator leaves symlinks alone.
+
+Codator never shares a Codex `config.toml` that sets `forced_login_method` or `forced_chatgpt_workspace_id`. Codex signs out, and revokes, any account that does not match those settings.
+
+Credentials, sessions, history, and plugin installs stay per account. So does Claude's `.claude.json`, which holds the login along with folder-trust answers, per-project allowed tools, and user-scope MCP servers. Provider or API-key settings in a shared file, such as `apiKeyHelper` or `model_provider`, apply to every account.
+
 ## Codex MCP servers
 
 ### Logging in to an MCP server over SSH
@@ -131,20 +144,20 @@ If the browser runs on the same machine, or the callback port is forwarded over 
 
 *For agents that drive this flow:* keep the `codator mcp login` process running in a persistent PTY and write the callback URL plus a newline to its stdin. Do not start a second login to submit the URL.
 
-### Sharing MCP servers across Codex accounts
+### Sharing MCP logins across Codex accounts
 
 ~~~sh
 codator mcp share          # once
-codator mcp login posthog  # now available in every Codex profile
+codator mcp login posthog  # now signed in for every Codex account
 ~~~
 
-Sharing merges the `[mcp_servers]` entries from every Codex profile and switches all profiles to keyring-stored OAuth credentials (`mcp_oauth_credentials_store = "keyring"`). One login then works for every account, and so does one logout. Before each Codator launch, additions, edits, and removals made in any profile are copied to the others. Codator reports conflicting edits to the same server so you can resolve them. If sync fails during a normal launch, Codator prints a warning and starts with each profile's existing settings. `mcp` commands stop with the error instead.
+Every account reads the same `[mcp_servers]` entries from the shared `~/.codex/config.toml`. `codator mcp share` also stores MCP OAuth credentials in the OS keyring (`mcp_oauth_credentials_store = "keyring"`), so one login works for every account, and so does one logout. A profile that keeps its own `config.toml` still has server additions, edits, and removals copied to and from the others before each launch. Codator reports conflicting edits to the same server so you can resolve them. If sync fails during a normal launch, Codator prints a warning and starts with each profile's existing settings. `mcp` commands stop with the error instead.
 
-Sharing requires a working OS keyring. Codator does not copy token files: if a profile uses file-based MCP credentials, switch it to the keyring and sign in again. Codator saves each profile's original config as `config.toml.before-mcp-sharing`. Project configs, named profiles, plugins, sessions, and models are not shared.
+Sharing requires a working OS keyring. Codator does not copy token files: if a profile uses file-based MCP credentials, switch it to the keyring and sign in again. Codator saves the original config as `config.toml.before-mcp-sharing`.
 
 ## Profiles and security
 
-Each label has its own native settings, sessions, and history in `${XDG_DATA_HOME:-~/.local/share}/codator/`, created with private permissions. This separates profiles for the same Unix user; it is not OS-level isolation or encryption. Codator trusts your home directory, environment, `PATH`, the native CLIs, and their plugins. Credentials stay with the native CLIs.
+Each label has its own credentials, account state, sessions, and history in `${XDG_DATA_HOME:-~/.local/share}/codator/`, created with private permissions. Configuration is shared as described in [Shared configuration](#shared-configuration). This separates profiles for the same Unix user; it is not OS-level isolation or encryption. Codator trusts your home directory, environment, `PATH`, the native CLIs, and their plugins. Credentials stay with the native CLIs.
 
 Commands that change credentials hold an exclusive lock on the profile. Normal sessions release the lock once an account is selected, so several sessions can use the same profile at once.
 

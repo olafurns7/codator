@@ -86,13 +86,16 @@ func login(store *Store, inv invocation) error {
 	if err != nil {
 		return err
 	}
-	if inv.provider == "codex" {
-		signals := newProbeSignalScope()
-		err := syncSharedMCPForSession(signals.ctx, store, nil, os.Stderr)
-		signals.stopListening()
-		if err != nil {
-			return err
-		}
+	signals := newProbeSignalScope()
+	err = shareConfigForSession(signals.ctx, store, inv.provider, os.Stderr)
+	if err == nil && inv.provider == "codex" {
+		err = syncSharedMCPForSession(signals.ctx, store, nil, os.Stderr)
+	}
+	if signals.stopListening() && err == nil {
+		err = context.Canceled
+	}
+	if err != nil {
+		return err
 	}
 	lock, err := store.Lock(inv.provider, inv.account)
 	if err != nil {
@@ -215,6 +218,9 @@ func launch(store *Store, inv invocation) error {
 	}
 	path, err := findNative(inv.provider)
 	if err != nil {
+		return err
+	}
+	if err := shareConfigForSession(signals.ctx, store, inv.provider, os.Stderr); err != nil {
 		return err
 	}
 	if inv.provider == "codex" {
