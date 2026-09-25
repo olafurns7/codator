@@ -192,7 +192,7 @@ func TestClaudeStatusBreakdownFromSanitizedCache(t *testing.T) {
 			payload: screenshot,
 			want: []string{
 				"claude work: last observed at ",
-				"\n  Current session: 95.0% remaining",
+				"\n  Current session: 95.0% remaining, resets ",
 				"\n  Weekly (all models): 69.0% remaining",
 				"\n  Weekly (Fable): 42.0% remaining",
 				"Weekly (OAuth apps): 78.0% remaining",
@@ -229,7 +229,7 @@ func TestClaudeStatusBreakdownFromSanitizedCache(t *testing.T) {
 			name:           "fresh partial snapshot retains scoped exhaustion",
 			payload:        malformedFable,
 			retainedDenial: true,
-			want:           []string{"Weekly (all models): 69.0% remaining", "Weekly (Fable): unavailable (malformed utilization)", "known exhausted: Weekly (Fable)"},
+			want:           []string{"Weekly (all models): 69.0% remaining, resets ", "Weekly (Fable): unavailable (malformed utilization)", "known exhausted: Weekly (Fable) until "},
 			wantNot:        []string{"Weekly (Fable): 0.0% remaining"},
 			probeCounts:    []int{1},
 		},

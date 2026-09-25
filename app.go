@@ -174,10 +174,10 @@ func status(store *Store, out io.Writer, providers ...string) error {
 				continue
 			}
 			q, err := probeAccount(signals.ctx, store, provider, account, "")
+			now := time.Now()
 			var claudeUsage string
 			if provider == "claude" {
-				now := time.Now().UTC()
-				state, found, cacheErr := store.readClaudeProbeCache(account, now)
+				state, found, cacheErr := store.readClaudeProbeCache(account, now.UTC())
 				claudeUsage = claudeStatus(state, found, cacheErr, now)
 			}
 			lock.Close()
@@ -187,27 +187,48 @@ func status(store *Store, out io.Writer, providers ...string) error {
 			if provider == "claude" {
 				fmt.Fprintf(out, "%s %s: %s\n", provider, account.Name, claudeUsage)
 			} else {
-				fmt.Fprintf(out, "%s %s: %s\n", provider, account.Name, quotaStatus(q, err))
+				fmt.Fprintf(out, "%s %s: %s\n", provider, account.Name, quotaStatus(q, err, now))
 			}
 		}
 	}
 	return nil
 }
 
-func quotaStatus(q quota, err error) string {
+func quotaStatus(q quota, err error, now time.Time) string {
+	lines := []string{quotaHeadline(q, err, now)}
+	for _, window := range q.Windows {
+		lines = append(lines, window.Label+": "+windowText(window.Used, window.ResetsAt, now))
+	}
+	if q.ResetCredits > 0 {
+		lines = append(lines, fmt.Sprintf("Rate-limit resets available in Codex: %d", q.ResetCredits))
+	}
+	return strings.Join(lines, "\n  ")
+}
+
+func quotaHeadline(q quota, err error, now time.Time) string {
 	if err != nil {
 		return "unknown (usage check failed)"
 	}
 	if q.Eligible {
-		return fmt.Sprintf("%.1f%% percentage headroom", q.Headroom)
+		return fmt.Sprintf("%.1f%% headroom", q.Headroom)
 	}
 	if q.Reason == "" {
 		q.Reason = "usage is unknown"
 	}
-	if q.Known {
-		return "ineligible (" + q.Reason + ")"
+	if !q.Known {
+		return "unknown (" + q.Reason + ")"
 	}
-	return "unknown (" + q.Reason + ")"
+	// An exhausted account is usable again once its last full window resets.
+	var until time.Time
+	for _, window := range q.Windows {
+		if window.Used >= 100 && window.ResetsAt.After(until) {
+			until = window.ResetsAt
+		}
+	}
+	if until.After(now) {
+		return "limit reached until " + whenText(until, now)
+	}
+	return "ineligible (" + q.Reason + ")"
 }
 
 func launch(store *Store, inv invocation) error {

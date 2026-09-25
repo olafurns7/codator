@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -49,9 +51,11 @@ type codexUsageResponse struct {
 	OrdinaryUsageAllowed *bool                              `json:"ordinaryUsageAllowed"`
 	RateLimits           *codexRateLimitSnapshot            `json:"rateLimits"`
 	ByLimitID            map[string]*codexRateLimitSnapshot `json:"rateLimitsByLimitId"`
+	ResetCredits         json.RawMessage                    `json:"rateLimitResetCredits"` // display only
 }
 
 type codexRateLimitSnapshot struct {
+	LimitName    json.RawMessage  `json:"limitName"` // display only
 	Primary      *codexRateWindow `json:"primary"`
 	Secondary    *codexRateWindow `json:"secondary"`
 	SpendReached *bool            `json:"spendControlReached"`
@@ -191,16 +195,80 @@ func probeCodexContext(ctx context.Context, account Account) (quota, error) {
 		verified.Reason = "usage response is malformed"
 		return verified, nil
 	}
-	if usage.OrdinaryUsageAllowed == nil {
-		verified.Reason = "ordinary usage permission is unknown"
-		return verified, nil
+	q := verified
+	switch {
+	case usage.OrdinaryUsageAllowed == nil:
+		q.Reason = "ordinary usage permission is unknown"
+	case !*usage.OrdinaryUsageAllowed:
+		q = evaluateUsage(usage.OrdinaryUsageAllowed, nil, nil)
+		q.Subscription = true
+	default:
+		q = codexQuotaFromUsage(usage.OrdinaryUsageAllowed, usage)
 	}
-	if !*usage.OrdinaryUsageAllowed {
-		result := evaluateUsage(usage.OrdinaryUsageAllowed, nil, nil)
-		result.Subscription = true
-		return result, nil
+	q.Windows = codexUsageWindows(usage)
+	var credits struct{ AvailableCount int }
+	if json.Unmarshal(usage.ResetCredits, &credits) == nil {
+		q.ResetCredits = credits.AvailableCount
 	}
-	return codexQuotaFromUsage(usage.OrdinaryUsageAllowed, usage), nil
+	return q, nil
+}
+
+// codexUsageWindows lists every reported limit window for status, including
+// those of an account that is out of usage.
+func codexUsageWindows(usage codexUsageResponse) []usageWindow {
+	buckets := usage.ByLimitID
+	if buckets == nil && usage.RateLimits != nil {
+		buckets = map[string]*codexRateLimitSnapshot{"codex": usage.RateLimits}
+	}
+	ids := make([]string, 0, len(buckets))
+	for id := range buckets {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] == "codex" || ids[j] != "codex" && ids[i] < ids[j] })
+	var windows []usageWindow
+	for _, id := range ids {
+		bucket := buckets[id]
+		if bucket == nil {
+			continue
+		}
+		prefix := ""
+		if id != "codex" {
+			prefix = id
+			var name string
+			if json.Unmarshal(bucket.LimitName, &name) == nil && name != "" {
+				prefix = name
+			}
+			prefix += " "
+		}
+		for _, window := range []*codexRateWindow{bucket.Primary, bucket.Secondary} {
+			if window == nil || window.UsedPercent == nil {
+				continue
+			}
+			item := usageWindow{Label: prefix + codexWindowLabel(window.WindowDurationMins), Used: *window.UsedPercent}
+			if window.ResetsAt != nil && *window.ResetsAt > 0 {
+				item.ResetsAt = time.Unix(int64(*window.ResetsAt), 0)
+			}
+			windows = append(windows, item)
+		}
+	}
+	return windows
+}
+
+func codexWindowLabel(minutes *float64) string {
+	switch {
+	case minutes == nil || *minutes <= 0:
+		return "Usage limit"
+	case *minutes == 300:
+		return "5-hour limit"
+	case *minutes == 10080:
+		return "Weekly limit"
+	case int(*minutes)%1440 == 0:
+		return fmt.Sprintf("%d-day limit", int(*minutes)/1440)
+	case int(*minutes)%60 == 0:
+		return fmt.Sprintf("%d-hour limit", int(*minutes)/60)
+	default:
+		return fmt.Sprintf("%d-minute limit", int(*minutes))
+	}
 }
 
 func codexSubscriptionPlan(planType string) bool {
