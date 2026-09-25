@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -196,5 +197,19 @@ func TestStatusTextKeepsProviderErrorLine(t *testing.T) {
 	}
 	if got, want := output.String(), "invalid: unavailable (unknown provider \"invalid\")\n"; got != want {
 		t.Fatalf("status text = %q, want %q", got, want)
+	}
+}
+
+func TestStatusShowsAccountEmail(t *testing.T) {
+	row := quotaStatusAccount("codex", "work", quota{Known: true, Eligible: true, Headroom: 25, Email: "a@example.com"}, nil, time.Time{}, statusDetails{})
+	var output strings.Builder
+	renderStatusEvent(&output, statusProvider{Provider: "codex", Status: "ok"}, &row)
+	if got, want := output.String(), "codex work <a@example.com>: 25.0% headroom\n"; got != want {
+		t.Fatalf("status text = %q, want %q", got, want)
+	}
+	_, store, account, _, _ := newClaudeSetupProfile(t)
+	writeClaudeSetupConfig(t, filepath.Join(account.NativeDir, ".claude.json"), `{"oauthAccount":{"emailAddress":"b@example.com"}}`)
+	if got := store.claudeEmail(account); got != "b@example.com" {
+		t.Fatalf("claude email = %q", got)
 	}
 }

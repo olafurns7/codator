@@ -67,6 +67,34 @@ func recoverClaudeSetup(ctx context.Context, store *Store, account Account) erro
 }
 
 func (s *Store) claudeSetupCandidate(account Account) (*claudeSetupConfig, error) {
+	config, err := s.readClaudeConfig(account)
+	if err != nil || config == nil {
+		return nil, err
+	}
+	oauth, hasOAuth := config.values["oauthAccount"]
+	if !hasOAuth || isClaudeJSONNull(oauth) {
+		return nil, nil
+	}
+	if _, complete := config.values["hasCompletedOnboarding"]; complete {
+		return nil, nil
+	}
+	return config, nil
+}
+
+// claudeEmail returns the signed-in address Claude records in its config.
+func (s *Store) claudeEmail(account Account) string {
+	config, err := s.readClaudeConfig(account)
+	if err != nil || config == nil {
+		return ""
+	}
+	var oauth struct {
+		EmailAddress string `json:"emailAddress"`
+	}
+	json.Unmarshal(config.values["oauthAccount"], &oauth)
+	return oauth.EmailAddress
+}
+
+func (s *Store) readClaudeConfig(account Account) (*claudeSetupConfig, error) {
 	dir, err := s.claudeNativeRoot(account)
 	if err != nil {
 		return nil, err
@@ -105,13 +133,6 @@ func (s *Store) claudeSetupCandidate(account Account) (*claudeSetupConfig, error
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		return nil, errors.New("Claude config is malformed")
-	}
-	oauth, hasOAuth := values["oauthAccount"]
-	if !hasOAuth || isClaudeJSONNull(oauth) {
-		return nil, nil
-	}
-	if _, complete := values["hasCompletedOnboarding"]; complete {
-		return nil, nil
 	}
 	return &claudeSetupConfig{name: name, data: data, values: values}, nil
 }
