@@ -23,7 +23,7 @@ On Linux, Codex also needs `bubblewrap` for its sandbox: `sudo apt install bubbl
 ~~~sh
 (
 set -eu
-version=${CODATOR_VERSION:-v0.6.3}
+version=${CODATOR_VERSION:-v0.6.4}
 installer=$(mktemp)
 trap 'rm -f "$installer"' EXIT
 curl -fsSL -o "$installer" "https://github.com/olafurns7/codator/releases/download/$version/install.sh"

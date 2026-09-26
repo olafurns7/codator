@@ -4,11 +4,11 @@
 
 Security fixes are developed on main and supported in the latest release. The normal installer is a checksum-only convenience path: it downloads a GitHub release asset and SHA256SUMS over HTTPS and explicitly trusts GitHub and the maintainer's release assets. It does not require gh, and a checksum manifest provides consistency rather than independent authenticity.
 
-CODATOR_VERIFY_ATTESTATION=1 enables the optional stronger path. The release workflow attests only SHA256SUMS, which contains the hashes of the eight release payloads. The installer verifies that manifest's attestation against the exact repository, release workflow, tag, source ref, GitHub issuer, and hosted-runner policy, then applies the manifest's unique checksum to the selected binary before staging it. Invalid values, missing bundles, verifier failures, manifest mismatches, and binary checksum failures fail closed. The optional provenance check is available for releases such as v0.6.3; it is not an everyday prerequisite.
+CODATOR_VERIFY_ATTESTATION=1 enables the optional stronger path. The release workflow attests only SHA256SUMS, which contains the hashes of the eight release payloads. The installer verifies that manifest's attestation against the exact repository, release workflow, tag, source ref, GitHub issuer, and hosted-runner policy, then applies the manifest's unique checksum to the selected binary before staging it. Invalid values, missing bundles, verifier failures, manifest mismatches, and binary checksum failures fail closed. The optional provenance check is available for releases such as v0.6.4; it is not an everyday prerequisite.
 
 ## Optional provenance bootstrap
 
-This recipe uses a real GitHub CLI to verify the downloaded installer's manifest before executing it. It then enables manifest verification again for the binary installer. Set CODATOR_VERSION to a concrete v... tag when overriding the documented v0.6.3 default.
+This recipe uses a real GitHub CLI to verify the downloaded installer's manifest before executing it. It then enables manifest verification again for the binary installer. Set CODATOR_VERSION to a concrete v... tag when overriding the documented v0.6.4 default.
 
 ~~~sh
 (
@@ -16,7 +16,7 @@ set -eu
 umask 077
 repo=https://github.com/olafurns7/codator
 repo_slug=olafurns7/codator
-version=${CODATOR_VERSION-v0.6.3}
+version=${CODATOR_VERSION-v0.6.4}
 
 fail() {
   printf '%s\n' "codator secure bootstrap: $*" >&2
