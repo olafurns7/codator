@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -320,6 +321,12 @@ type claudeUsageWindow struct {
 	DisplayName string          "json:\"display_name\""
 	Utilization *float64        "json:\"utilization\""
 	ResetsAt    json.RawMessage "json:\"resets_at\""
+}
+
+func (w claudeUsageWindow) same(other claudeUsageWindow) bool {
+	sameUsed := w.Utilization == nil && other.Utilization == nil ||
+		w.Utilization != nil && other.Utilization != nil && *w.Utilization == *other.Utilization
+	return sameUsed && w.DisplayName == other.DisplayName && bytes.Equal(w.ResetsAt, other.ResetsAt)
 }
 
 func parseClaudeQuota(payload json.RawMessage, now time.Time) (quota, error) {
