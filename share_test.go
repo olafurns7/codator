@@ -243,3 +243,182 @@ func TestShareConfigMergesCodexStateKeyedByProfile(t *testing.T) {
 		t.Fatalf("linked a restricted shared config: %v", err)
 	}
 }
+
+func TestShareConfigSharesCodexBundledPluginsOnly(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	shared := filepath.Join(home, ".codex")
+	store, err := newStore(tempDataHome(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var accounts []Account
+	for _, name := range []string{"alpha", "beta", "gamma"} {
+		account, err := store.EnsureAccount("codex", name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		accounts = append(accounts, account)
+	}
+	alpha, beta, gamma := accounts[0].NativeDir, accounts[1].NativeDir, accounts[2].NativeDir
+	// The desktop app writes the bundled marketplace and installs its plugins
+	// only under ~/.codex.
+	manifest := filepath.Join("computer-use", "1.0.0", ".codex-plugin", "plugin.json")
+	source := filepath.Join(".tmp", "bundled-marketplaces", "openai-bundled", ".agents", "plugins", "marketplace.json")
+	writeTestFile(t, filepath.Join(shared, "plugins", "cache", "openai-bundled", manifest), `{"mcpServers":"./.mcp.json"}`, time.Now())
+	writeTestFile(t, filepath.Join(shared, source), `{"name":"openai-bundled"}`, time.Now())
+	// The computer-use plugin runs its client app from CODEX_HOME/computer-use.
+	writeTestFile(t, filepath.Join(shared, "computer-use", "config.json"), `{"strings":{}}`, time.Now())
+	// Account-scoped plugin state stays in the profile.
+	writeTestFile(t, filepath.Join(alpha, "plugins", "cache", "openai-curated-remote", "gmail", ".codex-remote-plugin-install.json"), "alpha remote", time.Now())
+	writeTestFile(t, filepath.Join(alpha, "plugins", "data", "computer-use-openai-bundled", "state"), "alpha data", time.Now())
+	// A profile whose whole plugins folder the user linked to ~/.codex keeps
+	// that link, and the shared files it reaches are not absorbed into themselves.
+	if err := os.Symlink(filepath.Join(shared, "plugins"), filepath.Join(beta, "plugins")); err != nil {
+		t.Fatal(err)
+	}
+	// gamma has no plugins folder yet.
+
+	var out strings.Builder
+	if err := shareConfig(context.Background(), store, "codex", &out); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(shared, "plugins", "cache", "openai-bundled", manifest)); err != nil {
+		t.Fatalf("shared bundled plugin was lost: %v", err)
+	}
+	for _, dir := range []string{alpha, gamma} {
+		for _, item := range []string{filepath.Join("plugins", "cache", "openai-bundled"), filepath.Join(".tmp", "bundled-marketplaces"), "computer-use"} {
+			if target, err := os.Readlink(filepath.Join(dir, item)); err != nil || target != filepath.Join(shared, item) {
+				t.Fatalf("%s %s link = %q, %v", dir, item, target, err)
+			}
+		}
+	}
+	for _, dir := range accounts {
+		if got := readTestFile(t, filepath.Join(dir.NativeDir, "plugins", "cache", "openai-bundled", manifest)); got != `{"mcpServers":"./.mcp.json"}` {
+			t.Fatalf("%s bundled plugin manifest = %q", dir.Name, got)
+		}
+		if got := readTestFile(t, filepath.Join(dir.NativeDir, "computer-use", "config.json")); got != `{"strings":{}}` {
+			t.Fatalf("%s computer-use config = %q", dir.Name, got)
+		}
+	}
+	if target, err := os.Readlink(filepath.Join(beta, "plugins")); err != nil || target != filepath.Join(shared, "plugins") {
+		t.Fatalf("replaced the user's plugins link: %q, %v", target, err)
+	}
+	for path, want := range map[string]string{
+		filepath.Join(alpha, "plugins", "cache", "openai-curated-remote", "gmail", ".codex-remote-plugin-install.json"): "alpha remote",
+		filepath.Join(alpha, "plugins", "data", "computer-use-openai-bundled", "state"):                                 "alpha data",
+	} {
+		if info, err := os.Lstat(filepath.Dir(path)); err != nil || info.Mode()&os.ModeSymlink != 0 || readTestFile(t, path) != want {
+			t.Fatalf("%s is no longer private to the account", path)
+		}
+	}
+	for _, path := range []string{filepath.Join(shared, "plugins", "cache", "openai-curated-remote"), filepath.Join(shared, "plugins", "data")} {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("account plugin state reached %s: %v", path, err)
+		}
+	}
+	if matches, _ := filepath.Glob(filepath.Join(beta, "plugins", "cache", "*.before-sharing-*")); len(matches) != 0 || out.Len() != 0 {
+		t.Fatalf("backups %v output %q", matches, out.String())
+	}
+}
+
+// A folder the user linked between a profile and a nested shared item is left
+// as it is, whatever it points to, and nothing is shared through it.
+func TestShareConfigLeavesLinkedParentsOfNestedItems(t *testing.T) {
+	for _, link := range []struct{ item, parent string }{
+		{"plugins/cache/openai-bundled", "plugins"},
+		{"plugins/cache/openai-bundled", "plugins/cache"},
+		{".tmp/bundled-marketplaces", ".tmp"},
+	} {
+		for _, tc := range []struct {
+			name, parent, own string // parent: shared, custom, or a regular folder
+			shared            bool
+		}{
+			{"shared parent", "shared", "", true},
+			{"custom parent, different", "custom", "custom", true},
+			{"custom parent, identical", "custom", "shared", true},
+			{"custom parent, missing child", "custom", "", true},
+			{"custom parent, no shared target", "custom", "custom", false},
+			{"regular copy, different", "regular", "custom", true},
+			{"nothing anywhere", "regular", "", false},
+		} {
+			t.Run(link.parent+": "+tc.name, func(t *testing.T) {
+				home := t.TempDir()
+				native := filepath.Join(home, "profile")
+				target := filepath.Join(home, ".codex", link.item)
+				rel, _ := filepath.Rel(link.parent, link.item)
+				custom := filepath.Join(home, "custom")
+				if tc.shared {
+					writeTestFile(t, filepath.Join(target, "manifest"), "shared", time.Now())
+				}
+				switch tc.parent {
+				case "shared", "custom":
+					dest := filepath.Join(home, ".codex", link.parent)
+					if tc.parent == "custom" {
+						dest = custom
+					}
+					if err := os.MkdirAll(dest, 0700); err != nil {
+						t.Fatal(err)
+					}
+					if tc.own != "" {
+						writeTestFile(t, filepath.Join(dest, rel, "manifest"), tc.own, time.Now())
+					}
+					if err := os.MkdirAll(filepath.Dir(filepath.Join(native, link.parent)), 0700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink(dest, filepath.Join(native, link.parent)); err != nil {
+						t.Fatal(err)
+					}
+				default:
+					if tc.own != "" {
+						writeTestFile(t, filepath.Join(native, link.item, "manifest"), tc.own, time.Now())
+					}
+				}
+				account := Account{Provider: "codex", Name: "alpha", NativeDir: native}
+				for range 2 {
+					if err := shareConfigItem(context.Background(), "codex", []Account{account}, link.item, target, "stamp", io.Discard); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if tc.shared && readTestFile(t, filepath.Join(target, "manifest")) != "shared" {
+					t.Fatal("shared content changed")
+				}
+				if !tc.shared {
+					if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("created the shared target: %v", err)
+					}
+				}
+				switch tc.parent {
+				case "custom":
+					child := filepath.Join(custom, rel)
+					info, err := os.Lstat(child)
+					if tc.own == "" {
+						if !errors.Is(err, os.ErrNotExist) {
+							t.Fatalf("added %s inside the linked folder: %v", child, err)
+						}
+						break
+					}
+					if err != nil || !info.IsDir() || readTestFile(t, filepath.Join(child, "manifest")) != tc.own {
+						t.Fatalf("linked folder's %s was changed: %v, %v", child, info, err)
+					}
+					if matches, _ := filepath.Glob(child + ".before-sharing-*"); len(matches) != 0 {
+						t.Fatalf("backups inside the linked folder: %v", matches)
+					}
+				case "regular":
+					if tc.own == "" {
+						if _, err := os.Lstat(filepath.Join(native, link.item)); !errors.Is(err, os.ErrNotExist) {
+							t.Fatalf("created %s with nothing to share: %v", link.item, err)
+						}
+						break
+					}
+					if got, err := os.Readlink(filepath.Join(native, link.item)); err != nil || got != target {
+						t.Fatalf("regular copy link = %q, %v", got, err)
+					}
+					if readTestFile(t, filepath.Join(native, link.item+".before-sharing-stamp", "manifest")) != "custom" {
+						t.Fatal("lost the differing copy")
+					}
+				}
+			})
+		}
+	}
+}

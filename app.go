@@ -487,7 +487,7 @@ func execSelected(signals *probeSignalScope, store *Store, lock *AccountLock, pa
 		lock = nil
 	}
 	if provider == "codex" {
-		return execNative(lock, path, nativeArgs, codexEnv(account.NativeDir, os.Environ()))
+		return execNative(lock, path, codexArgs(account.NativeDir, nativeArgs), codexEnv(account.NativeDir, os.Environ()))
 	}
 	return execNative(lock, path, nativeArgs, claudeEnv(account.NativeDir, os.Environ()))
 }

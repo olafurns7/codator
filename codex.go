@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -75,6 +76,22 @@ func codexEnv(nativeDir string, base []string) []string {
 		overrides["CODEX_SQLITE_HOME"] = nativeDir
 	}
 	return buildEnv(base, codexAuthEnv, overrides)
+}
+
+// Codex loads the desktop app's bundled marketplace only from its own
+// CODEX_HOME (symlinks resolved), but the shared config.toml names the default
+// home's copy. A later -c from the user still wins.
+func codexArgs(nativeDir string, args []string) []string {
+	home, err := filepath.EvalSymlinks(nativeDir)
+	if err != nil {
+		return args
+	}
+	source := filepath.Join(home, ".tmp", "bundled-marketplaces", "openai-bundled")
+	if info, err := os.Stat(source); err != nil || !info.IsDir() {
+		return args
+	}
+	// An absolute path is never valid TOML, so Codex keeps it as the raw string.
+	return append([]string{"-c", "marketplaces.openai-bundled.source=" + source}, args...)
 }
 
 // Keep probes isolated from ambient credentials and code-loading knobs while

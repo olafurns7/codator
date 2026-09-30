@@ -18,11 +18,14 @@ import (
 // User configuration that every profile shares through the native default
 // directory, ~/.claude or ~/.codex. Credentials, account state, sessions, and
 // history stay in each profile.
-// ponytail: plugin installs stay per profile because their manifests record
-// absolute profile paths; sharing them needs a path-aware migration.
+// Codex's bundled marketplace (computer use, browser) is copied from the
+// desktop app into ~/.codex only; its plugins use paths relative to their root.
+// ponytail: other plugin installs stay per profile: remote installs follow each
+// account and are pruned by its sync, and plugins/data is each plugin's writable
+// state. Claude plugins record absolute profile paths.
 var sharedConfigItems = map[string][]string{
 	"claude": {"settings.json", "CLAUDE.md", "keybindings.json", "agents", "commands", "output-styles", "routines", "rules", "skills", "themes", "workflows"},
-	"codex":  {"config.toml", "AGENTS.md", "AGENTS.override.md", "hooks.json", "prompts", "rules", "skills", "themes"},
+	"codex":  {"config.toml", "AGENTS.md", "AGENTS.override.md", "hooks.json", "prompts", "rules", "skills", "themes", ".tmp/bundled-marketplaces", "plugins/cache/openai-bundled", "computer-use"},
 }
 
 const configShareLock = ".config-share.lock"
@@ -90,7 +93,7 @@ func shareConfigItem(ctx context.Context, provider string, accounts []Account, n
 	}
 	var copies []profileCopy
 	for _, account := range accounts {
-		if account.Err != nil {
+		if account.Err != nil || linkedParent(account.NativeDir, name) {
 			continue
 		}
 		path := filepath.Join(account.NativeDir, name)
@@ -100,6 +103,9 @@ func shareConfigItem(ctx context.Context, provider string, accounts []Account, n
 		}
 		if err != nil {
 			return err
+		}
+		if shared, err := os.Stat(target); err == nil && os.SameFile(info, shared) {
+			continue // reached through a linked parent folder
 		}
 		if codexConfig && restrictsCodexLogin(path) {
 			continue // belongs to this account
@@ -161,17 +167,32 @@ func shareConfigItem(ctx context.Context, provider string, accounts []Account, n
 		return err
 	}
 	for _, account := range accounts {
-		if account.Err != nil {
+		if account.Err != nil || linkedParent(account.NativeDir, name) {
 			continue
 		}
 		path := filepath.Join(account.NativeDir, name)
 		if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				return err
+			}
 			if err := os.Symlink(target, path); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// linkedParent reports whether a folder between a profile and a nested item,
+// such as plugins in plugins/cache/openai-bundled, is a symlink. The user linked
+// it on purpose, so nothing is moved or linked through it.
+func linkedParent(dir, name string) bool {
+	for parent := filepath.Dir(name); parent != "."; parent = filepath.Dir(parent) {
+		if info, err := os.Lstat(filepath.Join(dir, parent)); err == nil && info.Mode()&fs.ModeSymlink != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // absorb moves what dst lacks from src into dst and drops what dst already

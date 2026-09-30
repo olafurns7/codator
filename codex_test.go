@@ -451,4 +451,46 @@ func TestCodexEnvRemovesAuthAndEndpointOverrides(t *testing.T) {
 	}
 }
 
+func TestCodexArgsPointsBundledMarketplaceAtSelectedHome(t *testing.T) {
+	root := t.TempDir()
+	shared := filepath.Join(root, "default", ".tmp", "bundled-marketplaces")
+	home := filepath.Join(root, "pro\"file\nnext\a\x7f")
+	if err := os.MkdirAll(filepath.Join(home, ".tmp"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(shared, filepath.Join(home, ".tmp", "bundled-marketplaces")); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(home, alias); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"exec", "-c", "model=\"o3\"", "hi"}
+	if got := codexArgs(alias, args); strings.Join(got, "\n") != strings.Join(args, "\n") {
+		t.Fatalf("changed args without a bundled marketplace: %q", got)
+	}
+	if err := os.MkdirAll(shared, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(shared, "openai-bundled"), "not a marketplace", time.Now())
+	if got := codexArgs(alias, args); strings.Join(got, "\n") != strings.Join(args, "\n") {
+		t.Fatalf("changed args for a non-directory marketplace: %q", got)
+	}
+	if err := os.Remove(filepath.Join(shared, "openai-bundled")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(shared, "openai-bundled"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(canonical, ".tmp", "bundled-marketplaces", "openai-bundled")
+	got := codexArgs(alias, args)
+	if len(got) != len(args)+2 || got[0] != "-c" || got[1] != "marketplaces.openai-bundled.source="+source || strings.Join(got[2:], "\n") != strings.Join(args, "\n") {
+		t.Fatalf("args = %q, want the %q override before %q", got, source, args)
+	}
+}
+
 func stringPtr(value string) *string { return &value }
