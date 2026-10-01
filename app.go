@@ -250,6 +250,9 @@ func quotaStatus(q quota, err error, now time.Time) string {
 	for _, window := range q.Windows {
 		lines = append(lines, window.Label+": "+windowText(window.Used, window.ResetsAt, now))
 	}
+	if q.Credits != "" {
+		lines = append(lines, "Credits balance: "+q.Credits)
+	}
 	if q.ResetCredits > 0 {
 		lines = append(lines, fmt.Sprintf("Rate-limit resets available in Codex: %d", q.ResetCredits))
 	}
@@ -259,6 +262,12 @@ func quotaStatus(q quota, err error, now time.Time) string {
 func quotaHeadline(q quota, err error, now time.Time) string {
 	if err != nil {
 		return "unknown (usage check failed)"
+	}
+	if q.Eligible && q.OnCredits {
+		if q.Credits == "unlimited" {
+			return "included usage exhausted, on credits (unlimited)"
+		}
+		return "included usage exhausted, on credits (" + q.Credits + " left)"
 	}
 	if q.Eligible {
 		return fmt.Sprintf("%.1f%% headroom", q.Headroom)
@@ -478,6 +487,9 @@ func execSelected(signals *probeSignalScope, store *Store, lock *AccountLock, pa
 	usage := ""
 	if !q.Known {
 		usage = " (usage unknown)"
+	}
+	if q.OnCredits {
+		usage += " (on credits)"
 	}
 	fmt.Fprintf(os.Stderr, "codator: using %s account %s%s\n", provider, account.Name, usage)
 	if !credentialMutation(provider, nativeArgs) {

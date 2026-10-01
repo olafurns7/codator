@@ -34,6 +34,8 @@ type statusAccount struct {
 	ObservedAt      *time.Time             `json:"observed_at,omitempty"`
 	NextProbeAt     *time.Time             `json:"next_probe_at,omitempty"`
 	ResetCredits    int                    `json:"reset_credits,omitempty"`
+	CreditsBalance  string                 `json:"credits_balance,omitempty"`
+	OnCredits       bool                   `json:"on_credits,omitempty"`
 	Windows         []statusWindow         `json:"windows"`
 	KnownExhausted  []statusKnownExhausted `json:"known_exhausted"`
 
@@ -163,6 +165,10 @@ func quotaStatusAccount(provider, account string, q quota, probeErr error, now t
 	}
 	if provider == "codex" && q.ResetCredits > 0 {
 		row.ResetCredits = q.ResetCredits
+	}
+	if provider == "codex" {
+		row.CreditsBalance = q.Credits
+		row.OnCredits = q.OnCredits
 	}
 	return row
 }

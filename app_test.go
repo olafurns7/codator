@@ -14,6 +14,29 @@ import (
 	"time"
 )
 
+func TestQuotaStatusShowsCodexCredits(t *testing.T) {
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	q := quota{
+		Known: true, Eligible: true, Headroom: 0, OnCredits: true, Credits: "61222.41",
+		Windows: []usageWindow{{Label: "Weekly limit", Used: 100}},
+	}
+	want := "included usage exhausted, on credits (61222.41 left)\n" +
+		"  Weekly limit: 0.0% remaining (exhausted)\n" +
+		"  Credits balance: 61222.41"
+	if got := quotaStatus(q, nil, now); got != want {
+		t.Fatalf("credit status=%q, want %q", got, want)
+	}
+	q.Credits = "unlimited"
+	if got, want := quotaHeadline(q, nil, now), "included usage exhausted, on credits (unlimited)"; got != want {
+		t.Fatalf("unlimited credit headline=%q, want %q", got, want)
+	}
+
+	q = quota{Known: true, Reason: "all applicable usage headroom is exhausted", Credits: "5.00"}
+	if got, want := quotaStatus(q, nil, now), "ineligible (all applicable usage headroom is exhausted)\n  Credits balance: 5.00"; got != want {
+		t.Fatalf("ineligible account credit status=%q, want %q", got, want)
+	}
+}
+
 func TestCodatorDispatchChild(t *testing.T) {
 	if os.Getenv("CODATOR_DISPATCH_CHILD") == "1" {
 		os.Exit(run([]string{"codex", "--", "--help"}))
@@ -619,7 +642,15 @@ func TestLaunchPassesNativeArgsOpaque(t *testing.T) {
 		provider   string
 		invocation []string
 		nativeArgs []string
+		onCredits  bool
 	}{
+		{
+			name:       "Codex explicit account on credits",
+			provider:   "codex",
+			invocation: []string{"codex", "--account", "work", "exec", "--", "prompt"},
+			nativeArgs: []string{"exec", "--", "prompt"},
+			onCredits:  true,
+		},
 		{
 			name:     "Codex exec options, native account text, and separator",
 			provider: "codex",
@@ -693,6 +724,10 @@ func TestLaunchPassesNativeArgsOpaque(t *testing.T) {
 			captureFile := filepath.Join(root, "native-argv")
 			var script string
 			if test.provider == "codex" {
+				usageResponse := `{"id":3,"result":{"ordinaryUsageAllowed":true,"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":4102444800},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":4102444800},"spendControlReached":false}}}}`
+				if test.onCredits {
+					usageResponse = `{"id":3,"result":{"ordinaryUsageAllowed":false,"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":4102444800},"spendControlReached":false,"credits":{"hasCredits":true,"unlimited":false,"balance":"100"}}}}}`
+				}
 				script = `#!/bin/sh
 probe=0
 for arg in "$@"; do
@@ -703,7 +738,7 @@ if [ "$probe" = 1 ]; then
     case "$line" in
       *'"method":"initialize"'*) printf '%s\n' '{"id":1,"result":{}}' ;;
       *'"method":"account/read"'*) printf '%s\n' '{"id":2,"result":{"account":{"type":"chatgpt","planType":"plus"}}}' ;;
-      *'"method":"account/rateLimits/read"'*) printf '%s\n' '{"id":3,"result":{"ordinaryUsageAllowed":true,"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":4102444800},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":4102444800},"spendControlReached":false}}}}' ;;
+      *'"method":"account/rateLimits/read"'*) printf '%s\n' '__USAGE_RESPONSE__' ;;
     esac
   done
   exit 0
@@ -711,6 +746,7 @@ fi
 printf '%s\0' "$@" > "$CODATOR_CAPTURE_FILE"
 exit 23
 `
+				script = strings.Replace(script, "__USAGE_RESPONSE__", usageResponse, 1)
 			} else {
 				script = `#!/bin/sh
 if [ "$1" = --version ]; then printf 'unknown\n'; exit 0; fi
@@ -765,7 +801,11 @@ exit 23
 			if string(got) != want {
 				t.Fatalf("native argv = %q, want %q", strings.Split(string(got), "\x00"), test.nativeArgs)
 			}
-			if !strings.Contains(stderr.String(), "codator: using "+test.provider+" account work") {
+			wantNotice := "codator: using " + test.provider + " account work"
+			if test.onCredits {
+				wantNotice += " (on credits)"
+			}
+			if !strings.Contains(stderr.String(), wantNotice) {
 				t.Fatalf("native invocation bypassed selected profile: stderr=%q", stderr.String())
 			}
 			lock, err := store.Lock(test.provider, "work")

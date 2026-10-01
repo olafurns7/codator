@@ -70,6 +70,39 @@ func TestStatusJSONCodexAccountStates(t *testing.T) {
 	}
 }
 
+func TestStatusJSONShowsCodexCreditsOnlyWhenReported(t *testing.T) {
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	creditQuota := quota{Known: true, Eligible: true, OnCredits: true, Credits: "62500.00"}
+	row := quotaStatusAccount("codex", "credits", creditQuota, nil, now, statusDetails{})
+	if row.State != "available" || !row.Launchable || row.HeadroomPercent == nil || *row.HeadroomPercent != 0 || row.CreditsBalance != "62500.00" || !row.OnCredits {
+		t.Fatalf("credits account = %+v", row)
+	}
+	data, err := json.Marshal(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"credits_balance":"62500.00"`) || !strings.Contains(string(data), `"on_credits":true`) {
+		t.Fatalf("credits fields missing from JSON: %s", data)
+	}
+
+	empty := quotaStatusAccount("codex", "empty", quota{}, nil, now, statusDetails{})
+	data, err = json.Marshal(empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `"credits_balance"`) || strings.Contains(string(data), `"on_credits"`) {
+		t.Fatalf("empty credit fields were serialized: %s", data)
+	}
+	otherProvider := quotaStatusAccount("claude", "credits", creditQuota, nil, now, statusDetails{})
+	data, err = json.Marshal(otherProvider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `"credits_balance"`) || strings.Contains(string(data), `"on_credits"`) {
+		t.Fatalf("Codex credit fields were serialized for Claude: %s", data)
+	}
+}
+
 func TestStatusJSONIncludesClaudeCacheDetailsAndAbsoluteTimes(t *testing.T) {
 	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
 	observedAt := now.Add(-time.Minute)

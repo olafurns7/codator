@@ -1,12 +1,84 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestCodexCreditsFromUsage(t *testing.T) {
+	noSpend, reached := false, true
+	tests := []struct {
+		name        string
+		credits     json.RawMessage
+		spend       *bool
+		otherSpend  *bool
+		rateSpend   *bool
+		reachedType json.RawMessage
+		wantText    string
+		wantUsable  bool
+	}{
+		{name: "string balance", credits: json.RawMessage(`{"hasCredits":true,"unlimited":false,"balance":"61222.4086730000"}`), spend: &noSpend, wantText: "61222.41", wantUsable: true},
+		{name: "number balance", credits: json.RawMessage(`{"hasCredits":true,"unlimited":false,"balance":62500}`), spend: &noSpend, wantText: "62500.00", wantUsable: true},
+		{name: "zero balance", credits: json.RawMessage(`{"hasCredits":true,"unlimited":false,"balance":"0"}`), spend: &noSpend},
+		{name: "sub-cent balance", credits: json.RawMessage(`{"hasCredits":true,"unlimited":false,"balance":"0.004"}`), spend: &noSpend},
+		{name: "missing credits", spend: &noSpend},
+		{name: "credits disabled", credits: json.RawMessage(`{"hasCredits":false,"unlimited":false,"balance":"62500"}`), spend: &noSpend},
+		{name: "unlimited", credits: json.RawMessage(`{"hasCredits":true,"unlimited":true}`), spend: &noSpend, wantText: "unlimited", wantUsable: true},
+		{name: "malformed balance", credits: json.RawMessage(`{"hasCredits":true,"unlimited":false,"balance":"NaN"}`), spend: &noSpend},
+		{name: "negative balance", credits: json.RawMessage(`{"hasCredits":true,"unlimited":false,"balance":-1}`), spend: &noSpend},
+		{name: "spend control reached on codex", credits: json.RawMessage(`{"hasCredits":true,"balance":"1"}`), spend: &reached, wantText: "1.00"},
+		{name: "spend control reached on another bucket", credits: json.RawMessage(`{"hasCredits":true,"balance":"1"}`), spend: &noSpend, otherSpend: &reached, wantText: "1.00"},
+		{name: "spend control reached in legacy snapshot", credits: json.RawMessage(`{"hasCredits":true,"balance":"1"}`), spend: &noSpend, rateSpend: &reached, wantText: "1.00"},
+		{name: "codex spend control unknown", credits: json.RawMessage(`{"hasCredits":true,"balance":"1"}`), wantText: "1.00"},
+		{name: "member credits depleted", credits: json.RawMessage(`{"hasCredits":true,"balance":"100"}`), spend: &noSpend, reachedType: json.RawMessage(`"workspace_member_credits_depleted"`), wantText: "100.00"},
+		{name: "non-string reached type ignored", credits: json.RawMessage(`{"hasCredits":true,"balance":"1"}`), spend: &noSpend, reachedType: json.RawMessage(`1`), wantText: "1.00", wantUsable: true},
+		{name: "null reached type ignored", credits: json.RawMessage(`{"hasCredits":true,"balance":"1"}`), spend: &noSpend, reachedType: json.RawMessage(`null`), wantText: "1.00", wantUsable: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			usage := codexUsageResponse{ByLimitID: map[string]*codexRateLimitSnapshot{
+				"codex": {Credits: test.credits, SpendReached: test.spend, ReachedType: test.reachedType},
+			}}
+			if test.otherSpend != nil {
+				usage.ByLimitID["other"] = &codexRateLimitSnapshot{SpendReached: test.otherSpend}
+			}
+			if test.rateSpend != nil {
+				usage.RateLimits = &codexRateLimitSnapshot{SpendReached: test.rateSpend}
+			}
+			gotText, gotUsable := codexCreditsFromUsage(usage)
+			if gotText != test.wantText || gotUsable != test.wantUsable {
+				t.Fatalf("credits=(%q, %v), want (%q, %v)", gotText, gotUsable, test.wantText, test.wantUsable)
+			}
+		})
+	}
+
+	legacy := codexUsageResponse{RateLimits: &codexRateLimitSnapshot{
+		Credits: json.RawMessage(`{"hasCredits":true,"balance":5}`), SpendReached: &noSpend,
+	}}
+	if gotText, usable := codexCreditsFromUsage(legacy); gotText != "5.00" || !usable {
+		t.Fatalf("legacy credits=(%q, %v), want (5.00, true)", gotText, usable)
+	}
+
+	var malformed codexUsageResponse
+	if err := json.Unmarshal([]byte(`{"ordinaryUsageAllowed":false,"rateLimitsByLimitId":{"codex":{"credits":"unexpected","spendControlReached":false}}}`), &malformed); err != nil {
+		t.Fatalf("malformed credits made usage response fail to decode: %v", err)
+	}
+	if gotText, usable := codexCreditsFromUsage(malformed); gotText != "" || usable {
+		t.Fatalf("malformed credits=(%q, %v), want empty and unusable", gotText, usable)
+	}
+
+	otherOnly := codexUsageResponse{ByLimitID: map[string]*codexRateLimitSnapshot{
+		"codex": {SpendReached: &noSpend},
+		"other": {Credits: json.RawMessage(`{"hasCredits":true,"balance":5}`), SpendReached: &noSpend},
+	}}
+	if gotText, usable := codexCreditsFromUsage(otherOnly); gotText != "" || usable {
+		t.Fatalf("used non-codex credits=(%q, %v), want empty and unusable", gotText, usable)
+	}
+}
 
 func TestCodexQuotaUsesAllBucketsAndLegacyFallback(t *testing.T) {
 	ordinary, notSpent, spent := true, false, true
@@ -302,6 +374,22 @@ while IFS= read -r line; do
         if [ "__MODE__" = exhausted ]; then
           response='{"id":3,"result":{"ordinaryUsageAllowed":false,"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":4102444800},"secondary":null,"spendControlReached":false,"rateLimitReachedType":"rate_limit_reached"},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":null,"primary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":4102444800},"secondary":null,"spendControlReached":false},"codex_spark":{"limitId":"codex_spark","limitName":"GPT-5.3-Codex-Spark","primary":{"usedPercent":25,"windowDurationMins":300,"resetsAt":4102444800},"secondary":null,"spendControlReached":false}},"rateLimitResetCredits":{"availableCount":1,"credits":[]}}}'
         fi
+        if [ "__MODE__" = credits2 ] || [ "__MODE__" = credits2-no-balance ] || [ "__MODE__" = credits2-unknown ]; then
+          ordinary=false
+          credits='{"hasCredits":true,"unlimited":false,"balance":"61222.4086730000"}'
+          if [ "__MODE__" = credits2-no-balance ]; then credits='{"hasCredits":false,"unlimited":false,"balance":"61222.4086730000"}'; fi
+          if [ "__MODE__" = credits2-unknown ]; then ordinary=null; fi
+          response='{"id":3,"result":{"ordinaryUsageAllowed":__ORDINARY__,"rateLimits":{"limitId":"codex","primary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":4102444800},"secondary":null,"spendControlReached":false,"credits":__CREDITS__},"rateLimitsByLimitId":{"codex":{"limitId":"codex","primary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":4102444800},"secondary":null,"spendControlReached":false,"credits":__CREDITS__}}}}'
+          response=$(printf '%s\n' "$response" | sed "s|__ORDINARY__|$ordinary|g;s|__CREDITS__|$credits|g")
+        fi
+        if [ "__MODE__" = credits3 ] || [ "__MODE__" = credits3-no-balance ] || [ "__MODE__" = credits3-spend-reached ]; then
+          spend=false
+          credits='{"hasCredits":true,"unlimited":false,"balance":62500}'
+          if [ "__MODE__" = credits3-no-balance ]; then credits='{"hasCredits":false,"unlimited":false,"balance":62500}'; fi
+          if [ "__MODE__" = credits3-spend-reached ]; then spend=true; fi
+          response='{"id":3,"result":{"ordinaryUsageAllowed":true,"rateLimits":{"limitId":"codex","primary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":4102444800},"secondary":null,"spendControlReached":__SPEND__,"credits":__CREDITS__},"rateLimitsByLimitId":{"codex":{"limitId":"codex","primary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":4102444800},"secondary":null,"spendControlReached":__SPEND__,"credits":__CREDITS__}}}}'
+          response=$(printf '%s\n' "$response" | sed "s|__SPEND__|$spend|g;s|__CREDITS__|$credits|g")
+        fi
         printf '%s\n' "$response"
       fi
       ;;
@@ -346,6 +434,34 @@ done
 		"  Rate-limit resets available in Codex: 1"
 	if got := quotaStatus(quota, nil, now); got != want {
 		t.Fatalf("status=%q, want %q", got, want)
+	}
+	for _, test := range []struct {
+		mode       string
+		wantKnown  bool
+		wantOn     bool
+		wantText   string
+		wantReason string
+	}{
+		{mode: "credits2", wantKnown: true, wantOn: true, wantText: "61222.41"},
+		{mode: "credits3", wantKnown: true, wantOn: true, wantText: "62500.00"},
+		{mode: "credits3-spend-reached", wantKnown: true, wantText: "62500.00", wantReason: "spend control is reached"},
+		{mode: "credits2-no-balance", wantKnown: true, wantReason: "ordinary included usage is disallowed"},
+		{mode: "credits3-no-balance", wantKnown: true, wantReason: "all applicable usage headroom is exhausted"},
+		{mode: "credits2-unknown", wantText: "61222.41", wantReason: "ordinary usage permission is unknown"},
+	} {
+		t.Run(test.mode, func(t *testing.T) {
+			writeStub(test.mode)
+			quota, err := probeCodex(account)
+			if err != nil || !quota.Subscription || quota.Known != test.wantKnown || quota.OnCredits != test.wantOn || quota.Credits != test.wantText || quota.Reason != test.wantReason {
+				t.Fatalf("quota=%+v err=%v", quota, err)
+			}
+			if test.wantOn && (!quota.Eligible || quota.Headroom != 0) {
+				t.Fatalf("credits quota=%+v, want eligible with zero headroom", quota)
+			}
+			if !test.wantOn && quota.Eligible {
+				t.Fatalf("unexpectedly eligible quota=%+v", quota)
+			}
+		})
 	}
 	writeStub("error")
 	quota, err = probeCodex(account)
