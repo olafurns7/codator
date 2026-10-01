@@ -12,20 +12,26 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
 // User configuration that every profile shares through the native default
-// directory, ~/.claude or ~/.codex. Credentials, account state, sessions, and
-// history stay in each profile.
+// directory, ~/.claude or ~/.codex. Session transcripts (Claude projects, which
+// also hold per-project memory whose memory/MEMORY.md indexes are merged into
+// the shared index; Codex sessions and archived_sessions) are
+// shared so any account can resume any session. Credentials, account state,
+// prompt history, and Codex's memory pipeline (memories/ plus
+// memories_1.sqlite, which rebuilds memory files from a per-account database)
+// stay in each profile.
 // Codex's bundled marketplace (computer use, browser) is copied from the
 // desktop app into ~/.codex only; its plugins use paths relative to their root.
 // ponytail: other plugin installs stay per profile: remote installs follow each
 // account and are pruned by its sync, and plugins/data is each plugin's writable
 // state. Claude plugins record absolute profile paths.
 var sharedConfigItems = map[string][]string{
-	"claude": {"settings.json", "CLAUDE.md", "keybindings.json", "agents", "commands", "output-styles", "routines", "rules", "skills", "themes", "workflows"},
-	"codex":  {"config.toml", "AGENTS.md", "AGENTS.override.md", "hooks.json", "prompts", "rules", "skills", "themes", ".tmp/bundled-marketplaces", "plugins/cache/openai-bundled", "computer-use"},
+	"claude": {"settings.json", "CLAUDE.md", "keybindings.json", "agents", "commands", "output-styles", "routines", "rules", "skills", "themes", "workflows", "projects"},
+	"codex":  {"config.toml", "AGENTS.md", "AGENTS.override.md", "hooks.json", "prompts", "rules", "skills", "themes", ".tmp/bundled-marketplaces", "plugins/cache/openai-bundled", "computer-use", "sessions", "archived_sessions"},
 }
 
 const configShareLock = ".config-share.lock"
@@ -90,6 +96,7 @@ func shareConfigItem(ctx context.Context, provider string, accounts []Account, n
 		account  Account
 		path     string
 		modified time.Time
+		dir      bool
 	}
 	var copies []profileCopy
 	for _, account := range accounts {
@@ -110,7 +117,7 @@ func shareConfigItem(ctx context.Context, provider string, accounts []Account, n
 		if codexConfig && restrictsCodexLogin(path) {
 			continue // belongs to this account
 		}
-		copies = append(copies, profileCopy{account, path, info.ModTime()})
+		copies = append(copies, profileCopy{account, path, info.ModTime(), info.IsDir()})
 	}
 	sort.SliceStable(copies, func(i, j int) bool { return copies[i].modified.After(copies[j].modified) })
 	for _, c := range copies {
@@ -119,10 +126,22 @@ func shareConfigItem(ctx context.Context, provider string, accounts []Account, n
 		if seed {
 			err = os.MkdirAll(filepath.Dir(target), 0700)
 		}
+		if err == nil && seed && c.dir {
+			err = os.Mkdir(target, 0700)
+		}
 		if err != nil {
 			return err
 		}
-		kept, err := absorb(c.path, target)
+		backup := c.path + ".before-sharing-" + stamp
+		var kept bool
+		if c.dir {
+			if _, err := os.Lstat(backup); err == nil {
+				return fmt.Errorf("%s already exists", backup)
+			}
+			kept, err = shareDir(c.path, target, backup)
+		} else {
+			kept, err = absorb(c.path, target)
+		}
 		if err != nil {
 			return err
 		}
@@ -132,7 +151,10 @@ func shareConfigItem(ctx context.Context, provider string, accounts []Account, n
 		if !kept {
 			continue
 		}
-		backup := c.path + ".before-sharing-" + stamp
+		if c.dir {
+			fmt.Fprintf(out, "codator: %s account %s now uses the shared %s; its differing copy is saved as %s\n", provider, c.account.Name, target, backup)
+			continue
+		}
 		if _, err := os.Lstat(backup); err == nil {
 			return fmt.Errorf("%s already exists", backup)
 		}
@@ -195,6 +217,48 @@ func linkedParent(dir, name string) bool {
 	return false
 }
 
+// shareDir swaps a profile folder for a link to the shared one. Native CLIs
+// write by path, so every file is first hard-linked into the shared folder;
+// appends through either path then land in the same file. The set-aside
+// folder, which no writer reaches by path any more, is then absorbed and, if
+// anything differs, kept as backup.
+// ponytail: a file created between linkMissing and the swap, then appended
+// before absorb reaches it, splits; its start stays in the backup.
+func shareDir(src, dst, backup string) (bool, error) {
+	if err := linkMissing(src, dst); err != nil {
+		return false, err
+	}
+	if err := os.Rename(src, backup); err != nil {
+		return false, err
+	}
+	linkErr := os.Symlink(dst, src) // fails only if a writer recreated src
+	kept, err := absorb(backup, dst)
+	return kept, errors.Join(linkErr, err)
+}
+
+// linkMissing hard-links into dst each file of src that dst lacks. A file that
+// cannot be linked is moved by absorb, but a shared folder on another file
+// system stops sharing before src is swapped, since nothing can move there.
+func linkMissing(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		to := filepath.Join(dst, strings.TrimPrefix(path, src))
+		switch {
+		case entry.IsDir():
+			if os.MkdirAll(to, 0700) != nil {
+				return filepath.SkipDir
+			}
+		case entry.Type().IsRegular():
+			if err := os.Link(path, to); errors.Is(err, syscall.EXDEV) {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // absorb moves what dst lacks from src into dst and drops what dst already
 // holds identically. It reports whether src still holds anything that differs.
 func absorb(src, dst string) (bool, error) {
@@ -213,8 +277,11 @@ func absorb(src, dst string) (bool, error) {
 	}
 	switch {
 	case info.Mode().IsRegular() && shared.Mode().IsRegular():
+		if os.SameFile(info, shared) {
+			return false, os.Remove(src) // linked by linkMissing
+		}
 		if info.Size() != shared.Size() {
-			return true, nil
+			return true, mergeMemoryIndex(src, dst)
 		}
 		left, err := os.ReadFile(src)
 		if err != nil {
@@ -225,7 +292,7 @@ func absorb(src, dst string) (bool, error) {
 			return false, err
 		}
 		if !bytes.Equal(left, right) {
-			return true, nil
+			return true, mergeMemoryIndex(src, dst)
 		}
 		return false, os.Remove(src)
 	case info.IsDir() && shared.IsDir():
@@ -408,4 +475,47 @@ func sameJSON(a, b any) bool {
 	left, leftErr := json.Marshal(a)
 	right, rightErr := json.Marshal(b)
 	return leftErr == nil && rightErr == nil && bytes.Equal(left, right)
+}
+
+// mergeMemoryIndex appends to the shared Claude memory index the lines a
+// profile's index adds, so that profile's memory files stay listed. The
+// profile's own index is still saved in its backup.
+func mergeMemoryIndex(src, dst string) error {
+	if filepath.Base(src) != "MEMORY.md" || filepath.Base(filepath.Dir(src)) != "memory" {
+		return nil
+	}
+	own, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	shared, err := os.ReadFile(dst)
+	if err != nil {
+		return err
+	}
+	have := map[string]bool{}
+	for _, line := range strings.Split(string(shared), "\n") {
+		have[line] = true
+	}
+	var add []byte
+	for _, line := range strings.Split(string(own), "\n") {
+		if strings.TrimSpace(line) != "" && !have[line] {
+			have[line] = true
+			add = append(add, line+"\n"...)
+		}
+	}
+	if len(add) == 0 {
+		return nil
+	}
+	if len(shared) > 0 && shared[len(shared)-1] != '\n' {
+		add = append([]byte("\n"), add...)
+	}
+	file, err := os.OpenFile(dst, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		return err
+	}
+	_, err = file.Write(add)
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	return err
 }

@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -322,6 +324,238 @@ func TestShareConfigSharesCodexBundledPluginsOnly(t *testing.T) {
 	}
 }
 
+func TestShareConfigSharesSessionTranscripts(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	store, err := newStore(tempDataHome(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claudeAccounts, codexAccounts []Account
+	for _, name := range []string{"alpha", "beta"} {
+		account, err := store.EnsureAccount("claude", name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		claudeAccounts = append(claudeAccounts, account)
+		account, err = store.EnsureAccount("codex", name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		codexAccounts = append(codexAccounts, account)
+	}
+
+	old, recent := time.Now().Add(-2*time.Hour), time.Now()
+	claudeShared := filepath.Join(home, ".claude", "projects")
+	claudeSlug := "project-slug"
+	claudeIDs := []string{
+		"00000000-0000-4000-8000-000000000001",
+		"00000000-0000-4000-8000-000000000002",
+	}
+	claudeOtherID := "00000000-0000-4000-8000-000000000003"
+	claudeConflictID := "00000000-0000-4000-8000-000000000004"
+	claudeTranscripts := map[string]string{
+		claudeIDs[0] + ".jsonl":  "alpha Claude transcript",
+		claudeIDs[1] + ".jsonl":  "beta Claude transcript",
+		claudeOtherID + ".jsonl": "existing Claude transcript",
+	}
+	writeTestFile(t, filepath.Join(claudeShared, claudeSlug, claudeOtherID+".jsonl"), claudeTranscripts[claudeOtherID+".jsonl"], recent)
+	for i, account := range claudeAccounts {
+		writeTestFile(t, filepath.Join(account.NativeDir, "projects", claudeSlug, claudeIDs[i]+".jsonl"), claudeTranscripts[claudeIDs[i]+".jsonl"], recent)
+	}
+	writeTestFile(t, filepath.Join(claudeAccounts[0].NativeDir, "projects", claudeSlug, claudeConflictID+".jsonl"), "older Claude transcript", old)
+	writeTestFile(t, filepath.Join(claudeAccounts[1].NativeDir, "projects", claudeSlug, claudeConflictID+".jsonl"), "newer Claude transcript", recent)
+	if err := os.Chtimes(filepath.Join(claudeAccounts[0].NativeDir, "projects"), old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(filepath.Join(claudeAccounts[1].NativeDir, "projects"), recent, recent); err != nil {
+		t.Fatal(err)
+	}
+	if err := shareConfig(context.Background(), store, "claude", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	for _, account := range claudeAccounts {
+		link := filepath.Join(account.NativeDir, "projects")
+		if target, err := os.Readlink(link); err != nil || target != claudeShared {
+			t.Fatalf("%s projects link = %q, %v", account.Name, target, err)
+		}
+		for file, want := range claudeTranscripts {
+			if got := readTestFile(t, filepath.Join(link, claudeSlug, file)); got != want {
+				t.Fatalf("%s Claude transcript %s = %q, want %q", account.Name, file, got, want)
+			}
+		}
+	}
+	for file, want := range claudeTranscripts {
+		if got := readTestFile(t, filepath.Join(claudeShared, claudeSlug, file)); got != want {
+			t.Fatalf("shared Claude transcript %s = %q, want %q", file, got, want)
+		}
+	}
+	if got := readTestFile(t, filepath.Join(claudeShared, claudeSlug, claudeConflictID+".jsonl")); got != "newer Claude transcript" {
+		t.Fatalf("shared conflicting Claude transcript = %q", got)
+	}
+	backups, err := filepath.Glob(filepath.Join(claudeAccounts[0].NativeDir, "projects.before-sharing-*"))
+	if err != nil || len(backups) != 1 {
+		t.Fatalf("older Claude projects backups = %v, %v", backups, err)
+	}
+	if got := readTestFile(t, filepath.Join(backups[0], claudeSlug, claudeConflictID+".jsonl")); got != "older Claude transcript" {
+		t.Fatalf("older Claude transcript backup = %q", got)
+	}
+
+	codexShared := filepath.Join(home, ".codex")
+	codexSessionPaths := []string{
+		filepath.Join("2026", "09", "30", "rollout-2026-09-30T10-00-00-00000000-0000-4000-8000-000000000005.jsonl"),
+		filepath.Join("2026", "09", "30", "rollout-2026-09-30T11-00-00-00000000-0000-4000-8000-000000000006.jsonl"),
+	}
+	archivedPath := "rollout-2026-09-29T09-00-00-00000000-0000-4000-8000-000000000007.jsonl"
+	type transcript struct {
+		item, path, content string
+	}
+	codexTranscripts := []transcript{
+		{"sessions", codexSessionPaths[0], "alpha Codex transcript"},
+		{"sessions", codexSessionPaths[1], "beta Codex transcript"},
+		{"archived_sessions", archivedPath, "archived Codex transcript"},
+	}
+	for i, account := range codexAccounts {
+		transcript := codexTranscripts[i]
+		writeTestFile(t, filepath.Join(account.NativeDir, transcript.item, transcript.path), transcript.content, recent)
+	}
+	archived := codexTranscripts[2]
+	writeTestFile(t, filepath.Join(codexAccounts[0].NativeDir, archived.item, archived.path), archived.content, recent)
+	if err := shareConfig(context.Background(), store, "codex", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	for _, account := range codexAccounts {
+		for _, item := range []string{"sessions", "archived_sessions"} {
+			if target, err := os.Readlink(filepath.Join(account.NativeDir, item)); err != nil || target != filepath.Join(codexShared, item) {
+				t.Fatalf("%s %s link = %q, %v", account.Name, item, target, err)
+			}
+		}
+		for _, transcript := range codexTranscripts {
+			if got := readTestFile(t, filepath.Join(account.NativeDir, transcript.item, transcript.path)); got != transcript.content {
+				t.Fatalf("%s %s transcript %s = %q, want %q", account.Name, transcript.item, transcript.path, got, transcript.content)
+			}
+		}
+	}
+	for _, transcript := range codexTranscripts {
+		if got := readTestFile(t, filepath.Join(codexShared, transcript.item, transcript.path)); got != transcript.content {
+			t.Fatalf("shared %s transcript %s = %q, want %q", transcript.item, transcript.path, got, transcript.content)
+		}
+	}
+}
+
+// Claude appends to its transcript by path without holding it open. Lines it
+// appends while the profile folder is shared all reach the shared transcript.
+func TestShareConfigKeepsTranscriptAppendedDuringSharing(t *testing.T) {
+	for _, seed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("seed=%v", seed), func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			store, err := newStore(tempDataHome(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			account, err := store.EnsureAccount("claude", "alpha")
+			if err != nil {
+				t.Fatal(err)
+			}
+			shared := filepath.Join(home, ".claude", "projects")
+			if !seed {
+				writeTestFile(t, filepath.Join(shared, "slug", "other.jsonl"), "other", time.Now())
+			}
+			profile := filepath.Join(account.NativeDir, "projects")
+			for i := 0; i < 2000; i++ {
+				writeTestFile(t, filepath.Join(profile, "slug", fmt.Sprintf("z%04d.jsonl", i)), "old", time.Now())
+			}
+			live := filepath.Join(profile, "slug", "live.jsonl")
+			writeTestFile(t, live, "line-0\n", time.Now())
+			done := make(chan struct{})
+			var wg sync.WaitGroup
+			want := []string{"line-0"}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := 1; ; i++ {
+					select {
+					case <-done:
+						return
+					default:
+					}
+					file, err := os.OpenFile(live, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0600)
+					if err != nil {
+						continue // the folder is being swapped
+					}
+					line := fmt.Sprintf("line-%d", i)
+					if _, err := fmt.Fprintln(file, line); err == nil {
+						want = append(want, line)
+					}
+					file.Close()
+				}
+			}()
+			time.Sleep(10 * time.Millisecond)
+			for launch := 0; launch < 2; launch++ {
+				if err := shareConfig(context.Background(), store, "claude", io.Discard); err != nil {
+					close(done)
+					wg.Wait()
+					t.Fatalf("launch %d: %v", launch, err)
+				}
+			}
+			close(done)
+			wg.Wait()
+			if target, err := os.Readlink(profile); err != nil || target != shared {
+				t.Fatalf("projects link = %q, %v", target, err)
+			}
+			if got := strings.Fields(readTestFile(t, filepath.Join(shared, "slug", "live.jsonl"))); strings.Join(got, " ") != strings.Join(want, " ") {
+				t.Fatalf("shared transcript has %d of %d lines", len(got), len(want))
+			}
+			if backups, _ := filepath.Glob(profile + ".before-sharing-*"); len(backups) != 0 {
+				t.Fatalf("backups = %v", backups)
+			}
+		})
+	}
+}
+
+// Each profile's Claude memory index lines are added to the shared index.
+func TestShareConfigMergesClaudeMemoryIndex(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	store, err := newStore(tempDataHome(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared := filepath.Join(home, ".claude", "projects", "slug", "memory")
+	writeTestFile(t, filepath.Join(shared, "MEMORY.md"), "- [Common](common.md) — common", time.Now())
+	writeTestFile(t, filepath.Join(shared, "common.md"), "common", time.Now())
+	var accounts []Account
+	for _, name := range []string{"alpha", "beta"} {
+		account, err := store.EnsureAccount("claude", name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		accounts = append(accounts, account)
+		dir := filepath.Join(account.NativeDir, "projects", "slug", "memory")
+		writeTestFile(t, filepath.Join(dir, "MEMORY.md"), "- [Common](common.md) — common\n- ["+name+"]("+name+".md) — "+name+"\n", time.Now())
+		writeTestFile(t, filepath.Join(dir, name+".md"), name, time.Now())
+	}
+	if err := shareConfig(context.Background(), store, "claude", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	index := readTestFile(t, filepath.Join(shared, "MEMORY.md"))
+	for _, line := range []string{"- [Common](common.md) — common", "- [alpha](alpha.md) — alpha", "- [beta](beta.md) — beta"} {
+		if strings.Count(index, line+"\n") != 1 {
+			t.Fatalf("shared index %q lacks one %q", index, line)
+		}
+	}
+	for _, account := range accounts {
+		if got := readTestFile(t, filepath.Join(shared, account.Name+".md")); got != account.Name {
+			t.Fatalf("%s memory = %q", account.Name, got)
+		}
+		backups, _ := filepath.Glob(filepath.Join(account.NativeDir, "projects.before-sharing-*", "slug", "memory", "MEMORY.md"))
+		if len(backups) != 1 || !strings.Contains(readTestFile(t, backups[0]), account.Name) {
+			t.Fatalf("%s index backup = %v", account.Name, backups)
+		}
+	}
+}
+
 // A folder the user linked between a profile and a nested shared item is left
 // as it is, whatever it points to, and nothing is shared through it.
 func TestShareConfigLeavesLinkedParentsOfNestedItems(t *testing.T) {
@@ -419,6 +653,50 @@ func TestShareConfigLeavesLinkedParentsOfNestedItems(t *testing.T) {
 					}
 				}
 			})
+		}
+	}
+}
+
+// A shared folder on another file system cannot take a profile's files, so
+// the profile keeps its own folder, as before sharing moved anything.
+func TestShareConfigKeepsProfileFolderAcrossFileSystems(t *testing.T) {
+	home, err := os.MkdirTemp("/dev/shm", "codator-home-")
+	if err != nil {
+		t.Skip("no second file system:", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(home) })
+	t.Setenv("HOME", home)
+	dataHome := tempDataHome(t)
+	homeInfo, err := os.Stat(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataInfo, err := os.Stat(dataHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if homeInfo.Sys().(*syscall.Stat_t).Dev == dataInfo.Sys().(*syscall.Stat_t).Dev {
+		t.Skip("no second file system")
+	}
+	store, err := newStore(dataHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := store.EnsureAccount("claude", "alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	own := filepath.Join(account.NativeDir, "skills", "own", "SKILL.md")
+	writeTestFile(t, own, "own", time.Now())
+	for launch := 0; launch < 2; launch++ {
+		if err := shareConfig(context.Background(), store, "claude", io.Discard); err == nil {
+			t.Fatalf("launch %d shared skills across file systems", launch)
+		}
+		if got := readTestFile(t, own); got != "own" {
+			t.Fatalf("launch %d: profile skill = %q", launch, got)
+		}
+		if backups, _ := filepath.Glob(filepath.Join(account.NativeDir, "skills.before-sharing-*")); len(backups) != 0 {
+			t.Fatalf("launch %d: backups = %v", launch, backups)
 		}
 	}
 }
