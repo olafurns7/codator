@@ -124,7 +124,7 @@ Codator checks the links before each launch and login, and adds any that are mis
 
 Codator never shares a Codex `config.toml` that sets `forced_login_method` or `forced_chatgpt_workspace_id`. Codex signs out, and revokes, any account that does not match those settings.
 
-Credentials, sessions, history, and other plugin installs stay per account. So does Claude's `.claude.json`, which holds the login along with folder-trust answers, per-project allowed tools, and user-scope MCP servers. For Codex, each plugin's writable data in `plugins/data`, the plugins installed for a ChatGPT account, which Codex syncs and prunes for each account, and Codex's cache of that account's apps also stay per account. Provider or API-key settings in a shared file, such as `apiKeyHelper` or `model_provider`, apply to every account. Start a new session after sharing bundled plugin files. Availability also depends on Codex loading the plugin, the desktop app, and OS permissions.
+Session transcripts are shared so any account can resume a session; Claude's per-project memory lives with the transcripts and is shared too, with each account's memory index lines added to the shared index while its original is saved beside the profile. Credentials, prompt history, and other plugin installs stay per account. So does Claude's `.claude.json`, which holds the login along with folder-trust answers, per-project allowed tools, and user-scope MCP servers. For Codex, each plugin's writable data in `plugins/data`, the plugins installed for a ChatGPT account, which Codex syncs and prunes for each account, and Codex's cache of that account's apps also stay per account. Provider or API-key settings in a shared file, such as `apiKeyHelper` or `model_provider`, apply to every account. Start a new session after sharing bundled plugin files. Availability also depends on Codex loading the plugin, the desktop app, and OS permissions.
 
 ## Codex MCP servers
 
@@ -159,7 +159,7 @@ Sharing requires a working OS keyring. Codator does not copy token files: if a p
 
 ## Profiles and security
 
-Each label has its own credentials, account state, sessions, and history in `${XDG_DATA_HOME:-~/.local/share}/codator/`, created with private permissions. Configuration is shared as described in [Shared configuration](#shared-configuration). This separates profiles for the same Unix user; it is not OS-level isolation or encryption. Codator trusts your home directory, environment, `PATH`, the native CLIs, and their plugins. Credentials stay with the native CLIs.
+Each label has its own credentials, account state, and prompt history in `${XDG_DATA_HOME:-~/.local/share}/codator/`, created with private permissions; session transcripts are shared so any account can resume a session. Configuration is shared as described in [Shared configuration](#shared-configuration). This separates profiles for the same Unix user; it is not OS-level isolation or encryption. Codator trusts your home directory, environment, `PATH`, the native CLIs, and their plugins. Credentials stay with the native CLIs.
 
 Commands that change credentials hold an exclusive lock on the profile. Normal sessions release the lock once an account is selected, so several sessions can use the same profile at once.
 
