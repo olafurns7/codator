@@ -103,7 +103,7 @@ Add `--json` to `codator status` for one versioned JSON document with UTC timest
 
 ## How accounts are chosen
 
-Automatic selection skips accounts that are busy, exhausted, spend-capped, not on a subscription, or have unknown quota. For each account, `codator status` lists every usage limit with how much remains and when it resets, in local time. An exhausted Codex account shows when it becomes usable again. The status also shows why an account is skipped:
+Automatic selection skips accounts that are busy, exhausted, spend-capped, not on a subscription, or have unknown quota. For each account, `codator status` lists every usage limit with how much remains and when it resets, in local time. An exhausted Codex account shows when it becomes usable again. A Codex account whose included usage is exhausted but has a Codex credit balance stays eligible on credits; automatic selection uses it only when no other eligible account has included usage left, and status shows the balance. The status also shows why an account is skipped:
 
 - **busy:** another Codator command, such as a login, holds that profile's lock.
 - **unknown:** Codator could not read reliable usage data. Automatic selection skips it. An explicit `--account` still launches if the subscription is verified.

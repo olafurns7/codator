@@ -61,6 +61,14 @@ type codexRateLimitSnapshot struct {
 	Primary      *codexRateWindow `json:"primary"`
 	Secondary    *codexRateWindow `json:"secondary"`
 	SpendReached *bool            `json:"spendControlReached"`
+	Credits      json.RawMessage  `json:"credits"`
+	ReachedType  json.RawMessage  `json:"rateLimitReachedType"`
+}
+
+type codexCredits struct {
+	HasCredits *bool           `json:"hasCredits"`
+	Unlimited  *bool           `json:"unlimited"`
+	Balance    json.RawMessage `json:"balance"`
 }
 
 type codexRateWindow struct {
@@ -223,6 +231,14 @@ func probeCodexContext(ctx context.Context, account Account) (quota, error) {
 		q.Subscription = true
 	default:
 		q = codexQuotaFromUsage(usage.OrdinaryUsageAllowed, usage)
+	}
+	displayCredits, creditsUsable := codexCreditsFromUsage(usage)
+	q.Credits = displayCredits
+	if q.Known && !q.Eligible && creditsUsable {
+		q.Eligible = true
+		q.Headroom = 0
+		q.OnCredits = true
+		q.Reason = ""
 	}
 	q.Email = email
 	q.Windows = codexUsageWindows(usage)
@@ -391,6 +407,58 @@ func codexQuotaFromUsage(ordinary *bool, usage codexUsageResponse) quota {
 	}
 	q.Subscription = true
 	return q
+}
+
+func codexCreditsFromUsage(usage codexUsageResponse) (display string, usable bool) {
+	bucket := usage.ByLimitID["codex"]
+	if bucket == nil {
+		bucket = usage.RateLimits
+	}
+	if bucket == nil {
+		return "", false
+	}
+	var credits codexCredits
+	if len(bucket.Credits) == 0 || json.Unmarshal(bucket.Credits, &credits) != nil || credits.HasCredits == nil || !*credits.HasCredits {
+		return "", false
+	}
+	switch {
+	case credits.Unlimited != nil && *credits.Unlimited:
+		display = "unlimited"
+	default:
+		if balance, ok := codexCreditBalance(credits.Balance); ok && balance >= 0.005 {
+			display = strconv.FormatFloat(balance, 'f', 2, 64)
+		}
+	}
+	usable = display != "" && bucket.SpendReached != nil && !*bucket.SpendReached
+	var reachedType string
+	if json.Unmarshal(bucket.ReachedType, &reachedType) == nil && strings.HasSuffix(reachedType, "_credits_depleted") {
+		usable = false
+	}
+	for _, other := range usage.ByLimitID {
+		if other != nil && other.SpendReached != nil && *other.SpendReached {
+			usable = false
+		}
+	}
+	if usage.RateLimits != nil && usage.RateLimits.SpendReached != nil && *usage.RateLimits.SpendReached {
+		usable = false
+	}
+	return display, usable
+}
+
+func codexCreditBalance(raw json.RawMessage) (float64, bool) {
+	if len(raw) == 0 {
+		return 0, false
+	}
+	value := strings.TrimSpace(string(raw))
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		value = strings.TrimSpace(text)
+	}
+	balance, err := strconv.ParseFloat(value, 64)
+	if err != nil || math.IsNaN(balance) || math.IsInf(balance, 0) || balance < 0 {
+		return 0, false
+	}
+	return balance, true
 }
 
 func codexWindowPercentages(snapshot *codexRateLimitSnapshot) ([]float64, bool) {

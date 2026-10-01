@@ -39,6 +39,25 @@ func TestBestCandidateSkipsUnknownAndTiesByName(t *testing.T) {
 	}
 }
 
+func TestBestCandidatePrefersIncludedUsageOverCredits(t *testing.T) {
+	items := []candidate{
+		{Account: Account{Name: "credits"}, Quota: quota{Known: true, Eligible: true, Headroom: 0, OnCredits: true}},
+		{Account: Account{Name: "included"}, Quota: quota{Known: true, Eligible: true, Headroom: 1}},
+	}
+	got, ok := bestCandidate(items)
+	if !ok || got.Account.Name != "included" {
+		t.Fatalf("best=%+v ok=%v, want included-usage account", got, ok)
+	}
+	items = []candidate{
+		{Account: Account{Name: "z"}, Quota: quota{Known: true, Eligible: true, Headroom: 0, OnCredits: true}},
+		{Account: Account{Name: "a"}, Quota: quota{Known: true, Eligible: true, Headroom: 0, OnCredits: true}},
+	}
+	got, ok = bestCandidate(items)
+	if !ok || got.Account.Name != "a" {
+		t.Fatalf("best=%+v ok=%v, want name-ordered credits account", got, ok)
+	}
+}
+
 func TestExplicitLaunchNeedsVerifiedIdentityAndRejectsKnownIneligibleQuota(t *testing.T) {
 	for name, q := range map[string]quota{
 		"verified with unknown quota": {Subscription: true},
