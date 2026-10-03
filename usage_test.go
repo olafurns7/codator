@@ -77,7 +77,7 @@ func TestExplicitLaunchNeedsVerifiedIdentityAndRejectsKnownIneligibleQuota(t *te
 	}
 }
 
-func TestStatusTimesAreLocalAndRelative(t *testing.T) {
+func TestStatusTimesAreRelative(t *testing.T) {
 	for duration, want := range map[time.Duration]string{
 		30 * time.Second:                  "<1m",
 		23*time.Minute + 59*time.Second:   "23m",
@@ -90,16 +90,15 @@ func TestStatusTimesAreLocalAndRelative(t *testing.T) {
 		}
 	}
 	now := time.Date(2026, 9, 25, 16, 46, 30, 0, time.UTC)
-	if got := whenText(now.Add(-2*time.Minute), now); got != "Fri Sep 25 16:44 (2m ago)" {
-		t.Errorf("past time=%q", got)
-	}
-	if got := whenText(now.Add(90*time.Minute), now.In(time.FixedZone("UTC+2", 2*60*60))); got != "Fri Sep 25 20:16 (in 1h 30m)" {
-		t.Errorf("time is not shown in the viewer's zone: %q", got)
-	}
-	if got := windowText(100, time.Time{}, now); got != "0.0% remaining (exhausted)" {
+	used, remaining := 100.0, 0.0
+	exhausted := statusWindow{UsedPercent: &used, RemainingPercent: &remaining, Exhausted: true}
+	if got := statusWindowCell(exhausted, now).paint(false); got != "░░░░░░░░░░   0%" {
 		t.Errorf("exhausted window without a reset=%q", got)
 	}
-	if got := windowText(34, now.Add(-time.Minute), now); got != "66.0% remaining" {
+	used, remaining = 34, 66
+	past := now.Add(-time.Minute)
+	expired := statusWindow{UsedPercent: &used, RemainingPercent: &remaining, ResetsAt: &past}
+	if got := statusWindowCell(expired, now).paint(false); got != "██████▌░░░  66%" {
 		t.Errorf("past reset was shown: %q", got)
 	}
 }

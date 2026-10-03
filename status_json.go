@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"math"
 	"strings"
@@ -39,11 +38,7 @@ type statusAccount struct {
 	Windows         []statusWindow         `json:"windows"`
 	KnownExhausted  []statusKnownExhausted `json:"known_exhausted"`
 
-	display    string    `json:"-"`
-	quota      quota     `json:"-"`
-	probeErr   error     `json:"-"`
-	now        time.Time `json:"-"`
-	claudeText string    `json:"-"`
+	claudeUnavailable string `json:"-"` // why Claude usage could not be shown
 }
 
 type statusWindow struct {
@@ -53,8 +48,7 @@ type statusWindow struct {
 	Exhausted        bool       `json:"exhausted"`
 	ResetsAt         *time.Time `json:"resets_at,omitempty"`
 	Unavailable      string     `json:"unavailable,omitempty"`
-	text             string
-	resetForState    time.Time `json:"-"`
+	resetForState    time.Time  `json:"-"`
 }
 
 type statusKnownExhausted struct {
@@ -83,30 +77,6 @@ func renderStatusJSON(out io.Writer, report statusReport) error {
 	encoder := json.NewEncoder(out)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(report)
-}
-
-func renderStatusEvent(out io.Writer, provider statusProvider, account *statusAccount) {
-	if account == nil {
-		switch provider.Status {
-		case "unavailable":
-			fmt.Fprintf(out, "%s: unavailable (%s)\n", provider.Provider, provider.Error)
-		case "no_accounts":
-			fmt.Fprintf(out, "%s: no accounts enrolled\n", provider.Provider)
-		}
-		return
-	}
-	text := account.display
-	if text == "" && account.Provider == "claude" {
-		text = account.claudeText
-	}
-	if text == "" {
-		text = quotaStatus(account.quota, account.probeErr, account.now)
-	}
-	name := account.Account
-	if account.Email != "" {
-		name += " <" + account.Email + ">"
-	}
-	fmt.Fprintf(out, "%s %s: %s\n", account.Provider, name, text)
 }
 
 func quotaStatusAccount(provider, account string, q quota, probeErr error, now time.Time, details statusDetails) statusAccount {
@@ -159,9 +129,6 @@ func quotaStatusAccount(provider, account string, q quota, probeErr error, now t
 		NextProbeAt:     details.NextProbeAt,
 		Windows:         windows,
 		KnownExhausted:  knownExhausted,
-		quota:           q,
-		probeErr:        probeErr,
-		now:             now,
 	}
 	if provider == "codex" && q.ResetCredits > 0 {
 		row.ResetCredits = q.ResetCredits
@@ -173,7 +140,7 @@ func quotaStatusAccount(provider, account string, q quota, probeErr error, now t
 	return row
 }
 
-func unavailableStatusAccount(provider, account, state, reason, display string) statusAccount {
+func unavailableStatusAccount(provider, account, state, reason string) statusAccount {
 	return statusAccount{
 		Provider:       provider,
 		Account:        account,
@@ -181,7 +148,6 @@ func unavailableStatusAccount(provider, account, state, reason, display string) 
 		Reason:         reason,
 		Windows:        []statusWindow{},
 		KnownExhausted: []statusKnownExhausted{},
-		display:        display,
 	}
 }
 
