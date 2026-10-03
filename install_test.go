@@ -217,7 +217,7 @@ esac
 		if extraPath, ok := extra["CODATOR_TEST_PATH"]; ok {
 			path = extraPath
 		}
-		env := buildEnv(os.Environ(), nil, map[string]string{
+		env := buildEnv(os.Environ(), []string{"CODATOR_SHIMS"}, map[string]string{
 			"CODATOR_INSTALL_DIR":        installDir,
 			"CODATOR_VERIFY_ATTESTATION": "0",
 			"CODATOR_VERSION":            "v9.9.9",
@@ -319,6 +319,114 @@ esac
 
 		if output, err := run(t, fresh, map[string]string{"CODATOR_SHORTCUTS": "yes"}, true); err == nil || !strings.Contains(output, "CODATOR_SHORTCUTS must be 0 or 1") {
 			t.Fatalf("invalid CODATOR_SHORTCUTS accepted: %v\n%s", err, output)
+		}
+	})
+	t.Run("shims are opt-in and preserve unrelated files", func(t *testing.T) {
+		defaultDir := filepath.Join(root, "default shims")
+		output, err := run(t, defaultDir, nil, true)
+		if err != nil {
+			t.Fatalf("installer failed: %v\n%s", err, output)
+		}
+		if _, err := os.Stat(filepath.Join(defaultDir, "codator-shims")); !os.IsNotExist(err) {
+			t.Fatalf("shim directory created without CODATOR_SHIMS: %v", err)
+		}
+
+		dir := filepath.Join(root, "shim install's space")
+		output, err = run(t, dir, map[string]string{"CODATOR_SHIMS": "1"}, true)
+		if err != nil {
+			t.Fatalf("installer failed: %v\n%s", err, output)
+		}
+		shimDir := filepath.Join(dir, "codator-shims")
+		for _, shim := range []string{"codex", "claude"} {
+			target := filepath.Join(shimDir, shim)
+			link, err := os.Readlink(target)
+			if err != nil || link != "../codator" {
+				t.Fatalf("%s shim link = %q, err %v; want ../codator", shim, link, err)
+			}
+		}
+		pathHint := "Put the shim directory first on PATH so that a bare codex or claude runs through Codator:\n  export PATH=" + shellQuote(shimDir) + ":\"$PATH\""
+		if !strings.Contains(output, pathHint) {
+			t.Fatalf("missing shim PATH hint %q:\n%s", pathHint, output)
+		}
+		installHintAt := strings.Index(output, "Add this to your shell profile, then open a new shell:")
+		shimHintAt := strings.Index(output, "Put the shim directory first on PATH so that a bare codex or claude runs through Codator:")
+		if installHintAt < 0 || shimHintAt < installHintAt {
+			t.Fatalf("shim PATH hint did not follow install-directory hint:\n%s", output)
+		}
+
+		preserveDir := filepath.Join(root, "preserve shim")
+		claudePath := filepath.Join(preserveDir, "codator-shims", "claude")
+		if err := os.MkdirAll(filepath.Dir(claudePath), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(claudePath, []byte("keep this file"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		output, err = run(t, preserveDir, map[string]string{"CODATOR_SHIMS": "1"}, true)
+		if err != nil {
+			t.Fatalf("installer failed: %v\n%s", err, output)
+		}
+		if got, err := os.ReadFile(claudePath); err != nil || string(got) != "keep this file" {
+			t.Fatalf("existing claude file changed to %q, err %v", got, err)
+		}
+		if !strings.Contains(output, "Skipped claude shim: "+claudePath+" exists and is not a symlink.") {
+			t.Fatalf("missing shim skip notice:\n%s", output)
+		}
+
+		if output, err = run(t, filepath.Join(root, "invalid shims"), map[string]string{"CODATOR_SHIMS": "2"}, true); err == nil || !strings.Contains(output, "CODATOR_SHIMS must be 0 or 1") {
+			t.Fatalf("invalid CODATOR_SHIMS accepted: %v\n%s", err, output)
+		}
+	})
+	t.Run("re-running preserves a shim symlink", func(t *testing.T) {
+		dir := filepath.Join(root, "rerun shim")
+		for i := 0; i < 2; i++ {
+			output, err := run(t, dir, map[string]string{"CODATOR_SHIMS": "1"}, true)
+			if err != nil {
+				t.Fatalf("installer run %d failed: %v\n%s", i+1, err, output)
+			}
+		}
+		target := filepath.Join(dir, "codator-shims", "claude")
+		info, err := os.Lstat(target)
+		if err != nil || info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("claude shim after re-run = %v, err %v; want symlink", info, err)
+		}
+		link, err := os.Readlink(target)
+		if err != nil || link != "../codator" {
+			t.Fatalf("claude shim link = %q, err %v; want ../codator", link, err)
+		}
+	})
+	t.Run("replaces a symlink to a directory without changing its contents", func(t *testing.T) {
+		dir := filepath.Join(root, "directory shim")
+		shimDir := filepath.Join(dir, "codator-shims")
+		otherDir := filepath.Join(root, "shim directory target")
+		if err := os.MkdirAll(shimDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(otherDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		precious := filepath.Join(otherDir, "codator")
+		if err := os.WriteFile(precious, []byte("keep this file"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(shimDir, "claude")
+		if err := os.Symlink(otherDir, target); err != nil {
+			t.Fatal(err)
+		}
+		output, err := run(t, dir, map[string]string{"CODATOR_SHIMS": "1"}, true)
+		if err != nil {
+			t.Fatalf("installer failed: %v\n%s", err, output)
+		}
+		info, err := os.Lstat(target)
+		if err != nil || info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("claude shim after install = %v, err %v; want symlink", info, err)
+		}
+		link, err := os.Readlink(target)
+		if err != nil || link != "../codator" {
+			t.Fatalf("claude shim link = %q, err %v; want ../codator", link, err)
+		}
+		if got, err := os.ReadFile(precious); err != nil || string(got) != "keep this file" {
+			t.Fatalf("symlink target file changed to %q, err %v", got, err)
 		}
 	})
 	t.Run("installs verified pinned release into path with spaces", func(t *testing.T) {
@@ -1117,7 +1225,7 @@ func makeIsolatedInstallPath(t *testing.T, root, fakeBin string) string {
 	if err := os.Mkdir(isolated, 0700); err != nil {
 		t.Fatal(err)
 	}
-	for _, command := range []string{"awk", "chmod", "cp", "mkdir", "mktemp", "mv", "rm", "sed", "sh"} {
+	for _, command := range []string{"awk", "chmod", "cp", "ln", "mkdir", "mktemp", "mv", "rm", "sed", "sh"} {
 		path, err := exec.LookPath(command)
 		if err != nil {
 			t.Fatalf("find %s: %v", command, err)

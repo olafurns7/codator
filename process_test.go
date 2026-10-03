@@ -17,6 +17,103 @@ import (
 
 var systemPS, systemPSErr = exec.LookPath("ps")
 
+func TestFindNativeSkipsCodatorShim(t *testing.T) {
+	root := t.TempDir()
+	testBinary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	shims := filepath.Join(root, "shims")
+	native := filepath.Join(root, "native")
+	for _, dir := range []string{shims, native} {
+		if err := os.Mkdir(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	nativePath := filepath.Join(native, "claude")
+	if err := os.WriteFile(nativePath, []byte("native"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(testBinary, filepath.Join(shims, "claude")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shims+string(os.PathListSeparator)+native)
+
+	got, err := findNative("claude")
+	if err != nil || got != nativePath {
+		t.Fatalf("findNative(claude) = %q, %v; want %q", got, err, nativePath)
+	}
+
+	t.Setenv("PATH", shims)
+	if _, err := findNative("claude"); err == nil || err.Error() != "cannot find native claude CLI on PATH" {
+		t.Fatalf("findNative without native CLI error = %v, want cannot find native claude CLI on PATH", err)
+	}
+
+	other := filepath.Join(root, "other")
+	otherShims := filepath.Join(root, "othershims")
+	for _, dir := range []string{other, otherShims} {
+		if err := os.Mkdir(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	otherCodator := filepath.Join(other, "codator")
+	if err := os.WriteFile(otherCodator, []byte("other Codator"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(otherCodator, filepath.Join(otherShims, "claude")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", otherShims+string(os.PathListSeparator)+native)
+	got, err = findNative("claude")
+	if err != nil || got != nativePath {
+		t.Fatalf("findNative with another Codator shim = %q, %v; want %q", got, err, nativePath)
+	}
+
+	shims2 := filepath.Join(root, "shims2")
+	otherCodatorDir := filepath.Join(root, "other-codator")
+	for _, dir := range []string{shims2, otherCodatorDir} {
+		if err := os.Mkdir(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	otherCodator = filepath.Join(otherCodatorDir, "codator")
+	if err := os.WriteFile(otherCodator, []byte("Codator"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(otherCodator, filepath.Join(shims2, "claude")); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("self lookup unavailable", func(t *testing.T) {
+		previousSelfFileInfo := selfFileInfo
+		selfFileInfo = func() os.FileInfo { return nil }
+		t.Cleanup(func() { selfFileInfo = previousSelfFileInfo })
+		t.Setenv("PATH", shims2+string(os.PathListSeparator)+native)
+		got, err := findNative("claude")
+		if err != nil || got != nativePath {
+			t.Fatalf("findNative without self info = %q, %v; want %q", got, err, nativePath)
+		}
+	})
+
+	relative := filepath.Join(root, "relative")
+	nonExecutable := filepath.Join(root, "non-executable")
+	for _, dir := range []string{relative, nonExecutable} {
+		if err := os.Mkdir(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(testBinary, filepath.Join(relative, "claude")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nonExecutable, "claude"), []byte("not executable"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	t.Setenv("PATH", "relative"+string(os.PathListSeparator)+nonExecutable)
+	if _, err := findNative("claude"); err == nil || err.Error() != "cannot find native claude CLI on PATH" {
+		t.Fatalf("findNative with relative and non-executable entries error = %v, want cannot find native claude CLI on PATH", err)
+	}
+}
+
 func TestCodatorSignalChild(t *testing.T) {
 	if os.Getenv("CODATOR_SIGNAL_CHILD") == "1" {
 		os.Exit(run([]string{"codex"}))

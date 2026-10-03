@@ -4,9 +4,21 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
-func main() { os.Exit(run(os.Args[1:])) }
+func main() { os.Exit(run(invocationArgs(os.Args))) }
+
+func invocationArgs(argv []string) []string {
+	if len(argv) == 0 {
+		return nil
+	}
+	name := filepath.Base(argv[0])
+	if validProvider(name) {
+		return append([]string{name}, argv[1:]...)
+	}
+	return argv[1:]
+}
 
 func run(args []string) int {
 	inv, err := parseInvocation(args)

@@ -79,6 +79,17 @@ cdl --account work --model sonnet
 
 Both helpers accept a leading `--account NAME` and pass everything else through. If you previously defined `alias cdx=...` or `alias cdl=...` in your shell config, remove it so the alias does not shadow the helper.
 
+## Optional shims: bare `codex` and `claude`
+
+Set `CODATOR_SHIMS=1` to make the installer create `codator-shims/codex` and `codator-shims/claude` next to `codator` as symlinks to it. Put that directory first on `PATH`. Then a bare `codex` or `claude` selects an account like `codator codex` and `codator claude`, including when a terminal multiplexer or another tool relaunches or resumes a session with the plain native command. Codator skips its own shims when it looks for the native CLI. Every bare invocation selects an account, including one made from inside a running session. A leading `--account NAME` still pins the account.
+
+Install them by running the step 2 snippet with one extra variable:
+
+~~~sh
+export CODATOR_SHIMS=1
+# then paste the install snippet from step 2
+~~~
+
 ## Commands
 
 ~~~text
@@ -192,7 +203,7 @@ Do not disable the sandbox or the system-wide namespace restriction.
 
 ## Update and uninstall
 
-To update, run the install snippet again with a newer `CODATOR_VERSION`. To uninstall, delete `~/.local/bin/codator`, plus `cdx` and `cdl` if you installed them. Neither step removes profile data in `~/.local/share/codator/`; delete that directory yourself if you want it gone.
+To update, run the install snippet again with a newer `CODATOR_VERSION`. To uninstall, delete `~/.local/bin/codator`, plus `cdx` and `cdl` if you installed them, and `~/.local/bin/codator-shims` if you installed the shims. Neither step removes profile data in `~/.local/share/codator/`; delete that directory yourself if you want it gone.
 
 ## Building from source
 

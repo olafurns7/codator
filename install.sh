@@ -29,7 +29,13 @@ case "$install_shortcuts" in
 	*) fail "CODATOR_SHORTCUTS must be 0 or 1" ;;
 esac
 
-for command in awk chmod cp curl mkdir mktemp mv rm sed uname; do
+install_shims=${CODATOR_SHIMS-0}
+case "$install_shims" in
+	0|1) ;;
+	*) fail "CODATOR_SHIMS must be 0 or 1" ;;
+esac
+
+for command in awk chmod cp curl ln mkdir mktemp mv rm sed uname; do
 	command -v "$command" >/dev/null 2>&1 || fail "required command not found: $command"
 done
 
@@ -193,6 +199,19 @@ done
 if [ -n "$shortcuts" ]; then
 	printf 'WARNING: cdx and cdl bypass ALL sandboxing and approval prompts. The agent can run any command as you without asking. Use codator codex or codator claude for the normal permission flow.\n'
 fi
+if [ "$install_shims" = 1 ]; then
+	shim_dir=$install_dir/codator-shims
+	mkdir -p "$shim_dir" || fail "cannot create $shim_dir"
+	for shim in codex claude; do
+		target=$shim_dir/$shim
+		if { [ -e "$target" ] || [ -L "$target" ]; } && [ ! -L "$target" ]; then
+			printf 'Skipped %s shim: %s exists and is not a symlink.\n' "$shim" "$target" >&2
+			continue
+		fi
+		ln -sfn ../codator "$target" || fail "cannot install $shim shim"
+		printf 'Installed %s shim at %s\n' "$shim" "$target"
+	done
+fi
 doctor_supported=false
 if "$destination" --help 2>&1 | awk '
 $1 == "codator" && $2 == "doctor" { found = 1 }
@@ -229,3 +248,12 @@ case ":${PATH:-}:" in
 		printf '  export PATH=%s:"$PATH"\n' "$(shell_quote "$install_dir")"
 		;;
 esac
+if [ "$install_shims" = 1 ]; then
+	case "${PATH:-}" in
+		"$shim_dir":*) ;;
+		*)
+			printf '%s\n' 'Put the shim directory first on PATH so that a bare codex or claude runs through Codator:'
+			printf '  export PATH=%s:"$PATH"\n' "$(shell_quote "$shim_dir")"
+			;;
+	esac
+fi
