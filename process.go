@@ -57,12 +57,43 @@ func (s *probeSignalScope) stopListening() bool {
 	return s.ctx.Err() != nil
 }
 
-func findNative(provider string) (string, error) {
-	path, err := exec.LookPath(provider)
+var selfFileInfo = func() os.FileInfo {
+	executable, err := os.Executable()
 	if err != nil {
-		return "", fmt.Errorf("cannot find native %s CLI on PATH", provider)
+		return nil
 	}
-	return path, nil
+	info, err := os.Stat(executable)
+	if err != nil {
+		return nil
+	}
+	return info
+}
+
+func findNative(provider string) (string, error) {
+	self := selfFileInfo()
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if dir == "" || !filepath.IsAbs(dir) {
+			continue
+		}
+		candidate := filepath.Join(dir, provider)
+		info, err := os.Stat(candidate)
+		if err != nil || info.IsDir() || info.Mode()&0111 == 0 {
+			continue
+		}
+		// Preserve LookPath's execute check and skip shims targeting any Codator binary.
+		if syscall.Access(candidate, 1) != nil {
+			continue
+		}
+		resolved, err := filepath.EvalSymlinks(candidate)
+		if err == nil && filepath.Base(resolved) == "codator" {
+			continue
+		}
+		if self != nil && os.SameFile(info, self) {
+			continue
+		}
+		return candidate, nil
+	}
+	return "", fmt.Errorf("cannot find native %s CLI on PATH", provider)
 }
 
 // The lock fd survives exec, preserving the native CLI's terminal signals, job control, cwd, and exit status.
