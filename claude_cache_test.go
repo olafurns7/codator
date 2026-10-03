@@ -191,60 +191,62 @@ func TestClaudeStatusBreakdownFromSanitizedCache(t *testing.T) {
 			name:    "screenshot values on fresh probe and cache reuse",
 			payload: screenshot,
 			want: []string{
-				"claude work: last observed at ",
-				"\n  Current session: 95.0% remaining, resets ",
-				"\n  Weekly (all models): 69.0% remaining",
-				"\n  Weekly (Fable): 42.0% remaining",
-				"Weekly (OAuth apps): 78.0% remaining",
-				"Weekly (Opus #1): 76.0% remaining",
-				"Weekly (Opus #2): 46.0% remaining",
-				"Weekly (Sonnet #1): 60.0% remaining",
-				"Weekly (Sonnet #2): 56.0% remaining",
-				"Weekly (other reported model 1): 25.0% remaining",
+				"╭─ claude · observed ",
+				"│ ACCOUNT  SESSION ",
+				"│ ● work   █████████▌  95% ",
+				"WEEKLY", "██████▉░░░  69% ",
+				"OAUTH APPS", "███████▊░░  78% ",
+				"OPUS #1", "███████▌░░  76% ",
+				"OPUS #2", "████▌░░░░░  46% ",
+				"SONNET #1", "██████░░░░  60% ",
+				"SONNET #2", "█████▌░░░░  56% ",
+				"FABLE", "████▏░░░░░  42% ",
+				"OTHER REPORTED MODEL 1", "██▌░░░░░░░  25% ",
 			},
-			wantNot:     []string{"ineligible", "all applicable usage headroom is exhausted"},
+			wantNot:     []string{"skipped", "all applicable usage headroom is exhausted"},
 			probeCounts: []int{1, 1},
 		},
 		{
 			name:        "model-only exhaustion preserves shared headroom",
 			payload:     modelOnlyExhaustion,
-			want:        []string{"Weekly (all models): 8.0% remaining", "Weekly (Fable): 0.0% remaining (exhausted)"},
-			wantNot:     []string{"ineligible", "all applicable usage headroom is exhausted"},
+			want:        []string{"WEEKLY                   FABLE", "▊░░░░░░░░░   8% ", "░░░░░░░░░░   0% "},
+			wantNot:     []string{"skipped"},
 			probeCounts: []int{1},
 		},
 		{
 			name:        "shared exhaustion remains distinct from Fable",
 			payload:     sharedExhaustion,
-			want:        []string{"Weekly (all models): 0.0% remaining (exhausted)", "Weekly (Fable): 75.0% remaining"},
+			want:        []string{"WEEKLY                   FABLE", "│ ○ work ", "░░░░░░░░░░   0% ", "███████▌░░  75% "},
+			wantNot:     []string{"all applicable usage headroom is exhausted"},
 			probeCounts: []int{1},
 		},
 		{
 			name:        "missing shared weekly bucket is unavailable",
 			payload:     missingShared,
-			want:        []string{"Weekly (all models): unavailable (not reported)", "Weekly (Fable): 42.0% remaining"},
-			wantNot:     []string{"Weekly (all models): 100.0% remaining"},
+			want:        []string{"WEEKLY  FABLE", "  —       ████▏░░░░░  42% "},
+			wantNot:     []string{"100%"},
 			probeCounts: []int{1},
 		},
 		{
 			name:           "fresh partial snapshot retains scoped exhaustion",
 			payload:        malformedFable,
 			retainedDenial: true,
-			want:           []string{"Weekly (all models): 69.0% remaining, resets ", "Weekly (Fable): unavailable (malformed utilization)", "known exhausted: Weekly (Fable) until "},
-			wantNot:        []string{"Weekly (Fable): 0.0% remaining"},
+			want:           []string{"██████▉░░░  69% ", "│   Weekly (Fable): unavailable (malformed utilization)", "│   known exhausted: Weekly (Fable) for "},
+			wantNot:        []string{"░░░░░░░░░░   0%"},
 			probeCounts:    []int{1},
 		},
 		{
 			name:        "expired window is unavailable",
 			payload:     expiredSession,
-			want:        []string{"Current session: unavailable (window expired)", "Weekly (all models): 69.0% remaining"},
+			want:        []string{"SESSION  WEEKLY", "│   Current session: unavailable (window expired)", "  —        ██████▉░░░  69% "},
 			probeCounts: []int{1},
 		},
 		{
 			name:             "stale reserved snapshot keeps scoped denial and cooldown",
 			payload:          staleFable,
 			staleReservation: true,
-			want:             []string{"usage unavailable (probe reservation is unresolved; last observed at ", "known exhausted: Weekly (Fable)", "probe cooldown until "},
-			wantNot:          []string{"Current session: 95.0% remaining", "Weekly (all models): 8.0% remaining", "Weekly (Fable): 0.0% remaining"},
+			want:             []string{"│   usage unavailable (probe reservation is unresolved)", "│   known exhausted: Weekly (Fable)", "│   probe cooldown for "},
+			wantNot:          []string{"95%", "  8%", "  0%"},
 			probeCounts:      []int{0},
 		},
 		{
@@ -252,8 +254,8 @@ func TestClaudeStatusBreakdownFromSanitizedCache(t *testing.T) {
 			payload:       failedRefresh,
 			failedRefresh: true,
 			probeFails:    true,
-			want:          []string{"usage unavailable (probe reservation is unresolved; last observed at ", "known exhausted: Weekly (Fable)", "probe cooldown until "},
-			wantNot:       []string{"Weekly (all models): 8.0% remaining", "Weekly (Fable): 0.0% remaining"},
+			want:          []string{"│   usage unavailable (probe reservation is unresolved)", "│   known exhausted: Weekly (Fable)", "│   probe cooldown for "},
+			wantNot:       []string{"  8%", "  0%"},
 			probeCounts:   []int{1},
 		},
 	}
@@ -397,7 +399,7 @@ func TestClaudeCacheReusedAcrossWrapperProcesses(t *testing.T) {
 			installFakeClaude(t, binDir, fullClaudeUsagePayload(time.Now().UTC().Add(24*time.Hour), 10), false, 0, false)
 
 			code, stdout, stderr := runCodatorProcess(t, home, dataHome, binDir, []string{"status", "claude"})
-			if code != 0 || !strings.Contains(stdout, "Current session:") || !strings.Contains(stdout, "Weekly (all models):") || !strings.Contains(stdout, "Weekly (Fable):") {
+			if code != 0 || !strings.Contains(stdout, "│ ACCOUNT  SESSION ") || !strings.Contains(stdout, " WEEKLY ") || !strings.Contains(stdout, " FABLE ") {
 				t.Fatalf("status code=%d stdout=%q stderr=%q", code, stdout, stderr)
 			}
 			if got := fakeClaudeCount(t, account, ".probe-count"); got != 1 {
@@ -677,7 +679,7 @@ func TestClaudeCrashReservationSuppressesAndShowsRetryDeadline(t *testing.T) {
 	installFakeClaude(t, binDir, fullClaudeUsagePayload(time.Now().UTC().Add(24*time.Hour), 10), false, 0, false)
 
 	code, stdout, stderr := runCodatorProcess(t, home, dataHome, binDir, []string{"status", "claude"})
-	if code != 0 || !strings.Contains(stdout, "usage unavailable (probe reservation is unresolved)") || !strings.Contains(stdout, "probe cooldown until") {
+	if code != 0 || !strings.Contains(stdout, "usage unavailable (probe reservation is unresolved)") || !strings.Contains(stdout, "│   "+claudeRetryPrefix) {
 		t.Fatalf("reserved status code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	for _, args := range [][]string{

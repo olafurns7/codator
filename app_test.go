@@ -14,26 +14,22 @@ import (
 	"time"
 )
 
-func TestQuotaStatusShowsCodexCredits(t *testing.T) {
+func TestStatusShowsCodexCredits(t *testing.T) {
 	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
 	q := quota{
 		Known: true, Eligible: true, Headroom: 0, OnCredits: true, Credits: "61222.41",
 		Windows: []usageWindow{{Label: "Weekly limit", Used: 100}},
 	}
-	want := "included usage exhausted, on credits (61222.41 left)\n" +
-		"  Weekly limit: 0.0% remaining (exhausted)\n" +
-		"  Credits balance: 61222.41"
-	if got := quotaStatus(q, nil, now); got != want {
-		t.Fatalf("credit status=%q, want %q", got, want)
+	got := statusPanelText(now, false, codexStatusRow("work", q, now))
+	if want := "│ ● work   ░░░░░░░░░░   0%  61222.41 │\n│   on credits                       │"; !strings.Contains(got, want) {
+		t.Fatalf("credit status:\n%s\nwant line %q", got, want)
 	}
-	q.Credits = "unlimited"
-	if got, want := quotaHeadline(q, nil, now), "included usage exhausted, on credits (unlimited)"; got != want {
-		t.Fatalf("unlimited credit headline=%q, want %q", got, want)
-	}
-
 	q = quota{Known: true, Reason: "all applicable usage headroom is exhausted", Credits: "5.00"}
-	if got, want := quotaStatus(q, nil, now), "ineligible (all applicable usage headroom is exhausted)\n  Credits balance: 5.00"; got != want {
-		t.Fatalf("ineligible account credit status=%q, want %q", got, want)
+	got = statusPanelText(now, false, codexStatusRow("work", q, now))
+	for _, want := range []string{"│ ○ work   skipped     5.00 ", "│   all applicable usage headroom is exhausted"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("ineligible account credit status:\n%s\nwant line %q", got, want)
+		}
 	}
 }
 

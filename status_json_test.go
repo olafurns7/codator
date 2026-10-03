@@ -44,7 +44,7 @@ func TestStatusJSONCodexAccountStates(t *testing.T) {
 		t.Fatalf("known Claude denial was not included in latest available_at: %+v", denialExhausted)
 	}
 
-	busy := unavailableStatusAccount("codex", "busy", "busy", "", "busy")
+	busy := unavailableStatusAccount("codex", "busy", "busy", "")
 	unknown := quotaStatusAccount("codex", "unknown", quota{Reason: "usage response is malformed"}, nil, now, statusDetails{})
 	probeFailed := quotaStatusAccount("codex", "failed", quota{}, errors.New("probe failed"), now, statusDetails{})
 	if busy.State != "busy" || busy.Launchable || unknown.State != "unknown" || unknown.Reason != "usage response is malformed" || probeFailed.State != "unknown" || probeFailed.Reason != "usage check failed" {
@@ -119,13 +119,16 @@ func TestStatusJSONIncludesClaudeCacheDetailsAndAbsoluteTimes(t *testing.T) {
 		Denials:      []claudeCachedDenial{{DisplayName: "Haiku", ResetsAt: denialUntil, ObservedAt: denialObservedAt}},
 	}
 	claudeData := claudeStatusDetails(state, true, nil, now)
-	wantText := "last observed at Fri Sep 25 11:59 (1m ago)\n" +
-		"  Current session: 75.0% remaining, resets Fri Sep 25 17:00 (in 5h 0m)\n" +
-		"  Weekly (all models): 50.0% remaining, resets Wed Sep 30 12:00 (in 5d 0h)\n" +
-		"  Weekly (Fable): unavailable (not reported)\n" +
-		"  known exhausted: Weekly (Haiku) until Fri Sep 25 14:00 (in 2h 0m) (last observed at Fri Sep 25 11:50 (10m ago))"
-	if claudeData.Text != wantText {
-		t.Fatalf("Claude text = %q, want %q", claudeData.Text, wantText)
+	row := statusAccount{Provider: "claude", Account: "work", State: "available", ObservedAt: statusTime(observedAt),
+		Windows: claudeData.Windows, KnownExhausted: claudeData.KnownExhausted}
+	wantText := "" +
+		"╭─ claude · observed 1m ago ─────────────────────────────────────╮\n" +
+		"│ ACCOUNT  SESSION                WEEKLY                 FABLE   │\n" +
+		"│ ● work   ███████▌░░  75% 5h 0m  █████░░░░░  50% 5d 0h  —       │\n" +
+		"│   known exhausted: Weekly (Haiku) for 2h 0m (observed 10m ago) │\n" +
+		"╰────────────────────────────────────────────────────────────────╯\n"
+	if got := statusPanelText(now, false, row); got != wantText {
+		t.Fatalf("Claude panel:\n%s\nwant:\n%s", got, wantText)
 	}
 	jsonState := state
 	jsonState.ObservedAt = observedAt.Add(123 * time.Millisecond)
@@ -215,11 +218,13 @@ func TestCollectStatusGeneratedAtUsesWholeSeconds(t *testing.T) {
 func TestStatusTextRendererKeepsQuotaFormat(t *testing.T) {
 	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
 	q := quota{Known: true, Eligible: true, Headroom: 25, Windows: []usageWindow{{Label: "Weekly", Used: 75}}}
-	row := quotaStatusAccount("codex", "work", q, nil, now, statusDetails{Windows: codexStatusWindows(q.Windows)})
-	var output strings.Builder
-	renderStatusEvent(&output, statusProvider{Provider: "codex", Status: "ok"}, &row)
-	if got, want := output.String(), "codex work: 25.0% headroom\n  Weekly: 25.0% remaining\n"; got != want {
-		t.Fatalf("status text = %q, want %q", got, want)
+	want := "" +
+		"╭─ codex ──────────────────╮\n" +
+		"│ ACCOUNT  WEEKLY          │\n" +
+		"│ ● work   ██▌░░░░░░░  25% │\n" +
+		"╰──────────────────────────╯\n"
+	if got := statusPanelText(now, false, codexStatusRow("work", q, now)); got != want {
+		t.Fatalf("status text:\n%s\nwant:\n%s", got, want)
 	}
 }
 
@@ -228,17 +233,17 @@ func TestStatusTextKeepsProviderErrorLine(t *testing.T) {
 	if err := status(&Store{root: t.TempDir()}, &output, "invalid"); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := output.String(), "invalid: unavailable (unknown provider \"invalid\")\n"; got != want {
+	if got, want := output.String(), "╭─ invalid ────────────────────────────────╮\n"+
+		"│ unavailable (unknown provider \"invalid\") │\n"+
+		"╰──────────────────────────────────────────╯\n"; got != want {
 		t.Fatalf("status text = %q, want %q", got, want)
 	}
 }
 
 func TestStatusShowsAccountEmail(t *testing.T) {
 	row := quotaStatusAccount("codex", "work", quota{Known: true, Eligible: true, Headroom: 25, Email: "a@example.com"}, nil, time.Time{}, statusDetails{})
-	var output strings.Builder
-	renderStatusEvent(&output, statusProvider{Provider: "codex", Status: "ok"}, &row)
-	if got, want := output.String(), "codex work <a@example.com>: 25.0% headroom\n"; got != want {
-		t.Fatalf("status text = %q, want %q", got, want)
+	if got, want := statusPanelText(time.Time{}, false, row), "│ ● work   a@example.com │"; !strings.Contains(got, want) {
+		t.Fatalf("status text:\n%s\nwant line %q", got, want)
 	}
 	_, store, account, _, _ := newClaudeSetupProfile(t)
 	writeClaudeSetupConfig(t, filepath.Join(account.NativeDir, ".claude.json"), `{"oauthAccount":{"emailAddress":"b@example.com"}}`)

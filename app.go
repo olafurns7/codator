@@ -143,10 +143,26 @@ func syncSharedMCPForSession(ctx context.Context, store *Store, args []string, o
 	return nil
 }
 
+// status draws each provider's panel once its accounts are collected, and
+// draws what it has when collection stops early.
 func status(store *Store, out io.Writer, providers ...string) error {
+	color := statusColor(out)
+	var current statusProvider
+	var rows []statusAccount
+	flush := func() {
+		if current.Provider != "" && (current.Status != "ok" || len(rows) > 0) {
+			renderStatusPanel(out, current, rows, color, time.Now())
+		}
+	}
 	_, err := collectStatus(store, providers, func(provider statusProvider, account *statusAccount) {
-		renderStatusEvent(out, provider, account)
+		if account == nil {
+			flush()
+			current, rows = provider, nil
+			return
+		}
+		rows = append(rows, *account)
 	})
+	flush()
 	return err
 }
 
@@ -182,12 +198,15 @@ func collectStatus(store *Store, providers []string, emit func(statusProvider, *
 		}
 		providerStatus := statusProvider{Provider: provider, Status: "ok"}
 		report.Providers = append(report.Providers, providerStatus)
+		if emit != nil {
+			emit(providerStatus, nil)
+		}
 		for _, account := range accounts {
 			if err := signals.ctx.Err(); err != nil {
 				return report, err
 			}
 			if account.Err != nil {
-				row := unavailableStatusAccount(provider, account.Name, "unknown", "unsafe profile directory", "unknown (unsafe profile directory)")
+				row := unavailableStatusAccount(provider, account.Name, "unknown", "unsafe profile directory")
 				report.Accounts = append(report.Accounts, row)
 				if emit != nil {
 					emit(providerStatus, &row)
@@ -196,7 +215,7 @@ func collectStatus(store *Store, providers []string, emit func(statusProvider, *
 			}
 			lock, err := store.Lock(provider, account.Name)
 			if errors.Is(err, ErrAccountBusy) {
-				row := unavailableStatusAccount(provider, account.Name, "busy", "", "busy")
+				row := unavailableStatusAccount(provider, account.Name, "busy", "")
 				report.Accounts = append(report.Accounts, row)
 				if emit != nil {
 					emit(providerStatus, &row)
@@ -204,7 +223,7 @@ func collectStatus(store *Store, providers []string, emit func(statusProvider, *
 				continue
 			}
 			if err != nil {
-				row := unavailableStatusAccount(provider, account.Name, "unknown", "cannot lock profile", "unknown (cannot lock profile)")
+				row := unavailableStatusAccount(provider, account.Name, "unknown", "cannot lock profile")
 				report.Accounts = append(report.Accounts, row)
 				if emit != nil {
 					emit(providerStatus, &row)
@@ -234,7 +253,7 @@ func collectStatus(store *Store, providers []string, emit func(statusProvider, *
 			}
 			row := quotaStatusAccount(provider, account.Name, q, err, now, details)
 			if provider == "claude" {
-				row.claudeText = claudeData.Text
+				row.claudeUnavailable = claudeData.Unavailable
 			}
 			report.Accounts = append(report.Accounts, row)
 			if emit != nil {
@@ -243,52 +262,6 @@ func collectStatus(store *Store, providers []string, emit func(statusProvider, *
 		}
 	}
 	return report, nil
-}
-
-func quotaStatus(q quota, err error, now time.Time) string {
-	lines := []string{quotaHeadline(q, err, now)}
-	for _, window := range q.Windows {
-		lines = append(lines, window.Label+": "+windowText(window.Used, window.ResetsAt, now))
-	}
-	if q.Credits != "" {
-		lines = append(lines, "Credits balance: "+q.Credits)
-	}
-	if q.ResetCredits > 0 {
-		lines = append(lines, fmt.Sprintf("Rate-limit resets available in Codex: %d", q.ResetCredits))
-	}
-	return strings.Join(lines, "\n  ")
-}
-
-func quotaHeadline(q quota, err error, now time.Time) string {
-	if err != nil {
-		return "unknown (usage check failed)"
-	}
-	if q.Eligible && q.OnCredits {
-		if q.Credits == "unlimited" {
-			return "included usage exhausted, on credits (unlimited)"
-		}
-		return "included usage exhausted, on credits (" + q.Credits + " left)"
-	}
-	if q.Eligible {
-		return fmt.Sprintf("%.1f%% headroom", q.Headroom)
-	}
-	if q.Reason == "" {
-		q.Reason = "usage is unknown"
-	}
-	if !q.Known {
-		return "unknown (" + q.Reason + ")"
-	}
-	// An exhausted account is usable again once its last full window resets.
-	var until time.Time
-	for _, window := range q.Windows {
-		if window.Used >= 100 && window.ResetsAt.After(until) {
-			until = window.ResetsAt
-		}
-	}
-	if until.After(now) {
-		return "limit reached until " + whenText(until, now)
-	}
-	return "ineligible (" + q.Reason + ")"
 }
 
 func launch(store *Store, inv invocation) error {

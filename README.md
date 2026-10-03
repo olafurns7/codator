@@ -103,7 +103,18 @@ Add `--json` to `codator status` for one versioned JSON document with UTC timest
 
 ## How accounts are chosen
 
-Automatic selection skips accounts that are busy, exhausted, spend-capped, not on a subscription, or have unknown quota. For each account, `codator status` lists every usage limit with how much remains and when it resets, in local time. An exhausted Codex account shows when it becomes usable again. A Codex account whose included usage is exhausted but has a Codex credit balance stays eligible on credits; automatic selection uses it only when no other eligible account has included usage left, and status shows the balance. The status also shows why an account is skipped:
+Automatic selection skips accounts that are busy, exhausted, spend-capped, not on a subscription, or have unknown quota. `codator status` draws one panel per provider with one row per account: a dot before the name, then a bar for every usage limit with the percent remaining and the time until it resets. `●` means the account can launch, `○` means it cannot (exhausted, unknown or skipped), and `◐` means it is busy. On a terminal the dot is green, yellow on credits or busy, red when exhausted and dim otherwise. A busy, unknown or skipped account with no usage to show says so in place of the bars. A Codex account whose included usage is exhausted but has a Codex credit balance stays eligible on credits; automatic selection uses it only when no other eligible account has included usage left, and status shows `on credits` and the balance. The Claude panel title says how long ago the oldest usage snapshot was taken. Status colors the output only on a terminal, and never when `NO_COLOR` is set or `TERM` is `dumb`.
+
+~~~text
+╭─ codex ─────────────────────────────────────────────────────────╮
+│ ACCOUNT   EMAIL           WEEKLY                   CREDITS  RST │
+│ ● codex1  a@example.com   ██████████ 100% 6d 21h  41366.80      │
+│ ● codex2  bb@example.com  ████████▌░  85% 6d 21h   2974.40    1 │
+│ ◐ codex3                  busy                                  │
+╰─────────────────────────────────────────────────────────────────╯
+~~~
+
+A dim line under an account explains anything a cell cannot, such as why it is skipped:
 
 - **busy:** another Codator command, such as a login, holds that profile's lock.
 - **unknown:** Codator could not read reliable usage data. Automatic selection skips it. An explicit `--account` still launches if the subscription is verified.

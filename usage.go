@@ -78,27 +78,6 @@ func bestCandidate(accounts []candidate) (candidate, bool) {
 	return best, found
 }
 
-// windowText says what is left in a limit window and when it refills.
-func windowText(used float64, reset, now time.Time) string {
-	text := fmt.Sprintf("%.1f%% remaining", 100-used)
-	if used >= 100 {
-		text = "0.0% remaining (exhausted)"
-	}
-	if reset.After(now) {
-		text += ", resets " + whenText(reset, now)
-	}
-	return text
-}
-
-// whenText shows a time in the viewer's zone and how far it is from now.
-func whenText(t, now time.Time) string {
-	clock := t.In(now.Location()).Format("Mon Jan 2 15:04")
-	if t.After(now) {
-		return clock + " (in " + durationText(t.Sub(now)) + ")"
-	}
-	return clock + " (" + durationText(now.Sub(t)) + " ago)"
-}
-
 func durationText(d time.Duration) string {
 	minutes := int(d / time.Minute)
 	switch {

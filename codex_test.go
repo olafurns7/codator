@@ -416,11 +416,10 @@ done
 	}
 	// Status shows every window with its reset, in the viewer's zone.
 	now := time.Date(2099, 12, 30, 12, 0, 0, 0, time.UTC)
-	want := "40.0% headroom\n" +
-		"  5-hour limit: 80.0% remaining, resets Fri Jan 1 00:00 (in 1d 12h)\n" +
-		"  Weekly limit: 40.0% remaining, resets Fri Jan 1 00:00 (in 1d 12h)"
-	if got := quotaStatus(quota, nil, now); got != want {
-		t.Fatalf("status=%q, want %q", got, want)
+	want := "│ ACCOUNT    5H                      WEEKLY                 │\n" +
+		"│ ● fixture  ████████░░  80% 1d 12h  ████░░░░░░  40% 1d 12h │\n"
+	if got := statusPanelText(now, false, codexStatusRow(account.Name, quota, now)); !strings.Contains(got, want) {
+		t.Fatalf("status:\n%s\nwant:\n%s", got, want)
 	}
 	// An exhausted account keeps its windows, so status says when it returns.
 	writeStub("exhausted")
@@ -428,12 +427,10 @@ done
 	if err != nil || !quota.Subscription || !quota.Known || quota.Eligible {
 		t.Fatalf("exhausted quota=%+v err=%v", quota, err)
 	}
-	want = "limit reached until Fri Jan 1 00:00 (in 1d 12h)\n" +
-		"  Weekly limit: 0.0% remaining (exhausted), resets Fri Jan 1 00:00 (in 1d 12h)\n" +
-		"  GPT-5.3-Codex-Spark 5-hour limit: 75.0% remaining, resets Fri Jan 1 00:00 (in 1d 12h)\n" +
-		"  Rate-limit resets available in Codex: 1"
-	if got := quotaStatus(quota, nil, now); got != want {
-		t.Fatalf("status=%q, want %q", got, want)
+	want = "│ ACCOUNT    WEEKLY                  GPT-5.3-CODEX-SPARK 5-HOUR LIMIT  RST │\n" +
+		"│ ○ fixture  ░░░░░░░░░░   0% 1d 12h  ███████▌░░  75% 1d 12h              1 │\n"
+	if got := statusPanelText(now, false, codexStatusRow(account.Name, quota, now)); !strings.Contains(got, want) {
+		t.Fatalf("status:\n%s\nwant:\n%s", got, want)
 	}
 	for _, test := range []struct {
 		mode       string

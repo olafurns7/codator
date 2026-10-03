@@ -8,12 +8,8 @@ import (
 	"time"
 )
 
-func claudeStatus(state claudeProbeCache, found bool, readErr error, now time.Time) string {
-	return claudeStatusDetails(state, found, readErr, now).Text
-}
-
 type claudeStatusData struct {
-	Text           string
+	Unavailable    string // why usage cannot be shown; empty when Windows hold it
 	Windows        []statusWindow
 	KnownExhausted []statusKnownExhausted
 }
@@ -23,7 +19,7 @@ func claudeStatusDetails(state claudeProbeCache, found bool, readErr error, now 
 		return claudeStatusUnavailableDetails(state, "local usage snapshot is unavailable", now)
 	}
 	if !found {
-		return claudeStatusData{Text: "usage unavailable (no stored observation)"}
+		return claudeStatusData{Unavailable: "no stored observation"}
 	}
 	if state.Outcome == "reserved" {
 		return claudeStatusUnavailableDetails(state, "probe reservation is unresolved", now)
@@ -116,12 +112,10 @@ func claudeStatusDetails(state claudeProbeCache, found bool, readErr error, now 
 		add("Weekly (Fable)", nil)
 	}
 
-	status := make([]string, 0, len(buckets))
 	windows := make([]statusWindow, 0, len(buckets))
 	for _, item := range buckets {
 		window := claudeStatusWindowDetails(item.label, item.window, now)
 		windows = append(windows, window)
-		status = append(status, item.label+": "+window.text)
 	}
 	knownExhausted := make([]statusKnownExhausted, 0, len(state.Denials))
 	for _, denial := range state.Denials {
@@ -129,28 +123,18 @@ func claudeStatusDetails(state claudeProbeCache, found bool, readErr error, now 
 			continue
 		}
 		scope := claudeStatusDenialScope(state, denial)
-		status = append(status, claudeStatusDenialText(scope, denial, now))
 		knownExhausted = append(knownExhausted, statusKnownExhausted{
 			Scope: scope, Until: statusUTCSecond(denial.ResetsAt),
 			ObservedAt: statusUTCSecond(denial.ObservedAt), untilForState: denial.ResetsAt,
 		})
 	}
-	return claudeStatusData{
-		Text:           "last observed at " + whenText(state.ObservedAt, now) + "\n  " + strings.Join(status, "\n  "),
-		Windows:        windows,
-		KnownExhausted: knownExhausted,
-	}
-}
-
-func claudeStatusWindow(window *claudeUsageWindow, now time.Time) string {
-	return claudeStatusWindowDetails("", window, now).text
+	return claudeStatusData{Windows: windows, KnownExhausted: knownExhausted}
 }
 
 func claudeStatusWindowDetails(label string, window *claudeUsageWindow, now time.Time) statusWindow {
 	result := statusWindow{Label: label}
 	unavailable := func(reason string) statusWindow {
 		result.Unavailable = reason
-		result.text = "unavailable (" + reason + ")"
 		return result
 	}
 	if window == nil {
@@ -177,44 +161,22 @@ func claudeStatusWindowDetails(label string, window *claudeUsageWindow, now time
 	result.UsedPercent = &used
 	result.RemainingPercent = &remaining
 	result.Exhausted = used >= 100
-	var resetAt time.Time
-	if reset != nil {
-		resetAt = *reset
-	}
-	result.text = windowText(used, resetAt, now)
 	return result
 }
 
-func claudeStatusUnavailable(state claudeProbeCache, reason string, now time.Time) string {
-	return claudeStatusUnavailableDetails(state, reason, now).Text
-}
-
 func claudeStatusUnavailableDetails(state claudeProbeCache, reason string, now time.Time) claudeStatusData {
-	if !state.ObservedAt.IsZero() {
-		reason += "; last observed at " + whenText(state.ObservedAt, now)
-	}
-	parts := []string{"usage unavailable (" + reason + ")"}
 	knownExhausted := make([]statusKnownExhausted, 0, len(state.Denials))
 	for _, denial := range state.Denials {
 		if denial.ObservedAt.IsZero() || denial.ObservedAt.After(now) || !denial.ResetsAt.After(now) {
 			continue
 		}
 		scope := claudeStatusDenialScope(state, denial)
-		parts = append(parts, claudeStatusDenialText(scope, denial, now))
 		knownExhausted = append(knownExhausted, statusKnownExhausted{
 			Scope: scope, Until: statusUTCSecond(denial.ResetsAt),
 			ObservedAt: statusUTCSecond(denial.ObservedAt), untilForState: denial.ResetsAt,
 		})
 	}
-	if state.NextProbeAt.After(now) {
-		parts = append(parts, "probe cooldown until "+whenText(state.NextProbeAt, now))
-	}
-	return claudeStatusData{Text: strings.Join(parts, "; "), KnownExhausted: knownExhausted}
-}
-
-func claudeStatusDenialText(scope string, denial claudeCachedDenial, now time.Time) string {
-	return fmt.Sprintf("known exhausted: %s until %s (last observed at %s)",
-		scope, whenText(denial.ResetsAt, now), whenText(denial.ObservedAt, now))
+	return claudeStatusData{Unavailable: reason, KnownExhausted: knownExhausted}
 }
 
 func claudeStatusDenialScope(state claudeProbeCache, denial claudeCachedDenial) string {
