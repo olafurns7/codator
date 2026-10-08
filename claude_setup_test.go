@@ -520,3 +520,212 @@ func boolToInt(value bool) int {
 	}
 	return 0
 }
+
+func TestLoginDaysLeftRoundsUpLikeClaudeCode(t *testing.T) {
+	now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		left     time.Duration
+		wantDays int
+		wantText string
+		wantWarn bool
+	}{
+		{-time.Hour, 0, "login expired", true},
+		{0, 0, "login expired", true},
+		{time.Millisecond, 1, "login expires in 1 day", true},
+		{24 * time.Hour, 1, "login expires in 1 day", true},
+		{24*time.Hour + time.Millisecond, 2, "login expires in 2 days", true},
+		{72 * time.Hour, 3, "login expires in 3 days", true},
+		{72*time.Hour + time.Millisecond, 4, "login expires in 4 days", false},
+		{10 * 24 * time.Hour, 10, "login expires in 10 days", false},
+	} {
+		expires := now.Add(test.left)
+		text, warn := loginExpiryText(expires, now)
+		if days := loginDaysLeft(expires, now); days != test.wantDays || text != test.wantText || warn != test.wantWarn {
+			t.Errorf("left %s: days=%d text=%q warn=%t, want %d %q %t", test.left, days, text, warn, test.wantDays, test.wantText, test.wantWarn)
+		}
+	}
+	// The furthest accepted date is beyond what a time.Duration can hold.
+	if days := loginDaysLeft(time.UnixMilli(claudeLoginMaxMillis), now); days != 2912163 {
+		t.Errorf("days until the furthest accepted date = %d, want 2912163", days)
+	}
+}
+
+func TestStatusKeepsLoginExpiryForLockedClaudeAccount(t *testing.T) {
+	_, store, account, _, _ := newClaudeSetupProfile(t)
+	expires := time.Now().Add(47 * time.Hour)
+	writeClaudeSetupConfig(t, filepath.Join(account.NativeDir, ".credentials.json"),
+		`{"claudeAiOauth":{"accessToken":"fake-access","refreshTokenExpiresAt":`+strconv.FormatInt(expires.UnixMilli(), 10)+`}}`)
+	lock, err := store.Lock("claude", "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	report, err := collectStatus(store, []string{"claude"}, nil)
+	if err != nil || len(report.Accounts) != 1 || report.Accounts[0].State != "busy" || report.Accounts[0].Launchable {
+		t.Fatalf("status report=%+v err=%v", report, err)
+	}
+	var out strings.Builder
+	if err := renderStatusJSON(&out, report); err != nil {
+		t.Fatal(err)
+	}
+	if want := `"login_expires_at": "` + expires.UTC().Truncate(time.Second).Format(time.RFC3339) + `"`; !strings.Contains(out.String(), want) {
+		t.Fatalf("busy account JSON lacks %s:\n%s", want, out.String())
+	}
+	panel := statusPanelText(time.Now(), false, report.Accounts...)
+	if !strings.Contains(panel, "LOGIN") || !strings.Contains(panel, "  2d ") || !strings.Contains(panel, "│   login expires in 2 days; run: codator login claude work") {
+		t.Fatalf("busy account panel:\n%s", panel)
+	}
+	if strings.Contains(out.String()+panel, "fake-") {
+		t.Fatalf("output leaks a credentials value: %s%s", out.String(), panel)
+	}
+}
+
+func TestClaudeLoginExpiryShowsDaysLeftAndNothingElse(t *testing.T) {
+	credentials := func(value string) string {
+		return `{"claudeAiOauth":{"accessToken":"fake-access","refreshToken":"fake-refresh","expiresAt":1,"refreshTokenExpiresAt":` + value + `},"mcpOAuth":{"server":{"accessToken":"fake-mcp"}}}`
+	}
+	millis := func(left time.Duration) string {
+		return strconv.FormatInt(time.Now().Add(left).UnixMilli(), 10)
+	}
+	const renew = "; run: codator login claude work"
+	for _, test := range []struct {
+		name        string
+		credentials string // "" writes no file
+		mode        os.FileMode
+		known       bool
+		cell        string // the LOGIN cell
+		text        string // doctor wording, and the launch and table warning when warn is set
+		warn        bool
+	}{
+		{"two days ahead", credentials(millis(47 * time.Hour)), 0600, true, "2d", "login expires in 2 days", true},
+		{"ten days ahead", credentials(millis(239 * time.Hour)), 0600, true, "10d", "login expires in 10 days", false},
+		{"expired", credentials(millis(-time.Hour)), 0600, true, "expired", "login expired", true},
+		{"absent file", "", 0600, false, "", "", false},
+		{"absent key", `{"claudeAiOauth":{"accessToken":"fake-access"},"mcpOAuth":{}}`, 0600, false, "", "", false},
+		{"keychain host", `{"mcpOAuth":{"server":{"accessToken":"fake-mcp"}}}`, 0600, false, "", "", false},
+		{"null", credentials("null"), 0600, false, "", "", false},
+		{"string", credentials(`"` + millis(47*time.Hour) + `"`), 0600, false, "", "", false},
+		{"negative", credentials("-1"), 0600, false, "", "", false},
+		{"zero", credentials("0"), 0600, false, "", "", false},
+		{"absurdly large", credentials("1e300"), 0600, false, "", "", false},
+		{"not a float", credentials("1e999"), 0600, false, "", "", false},
+		{"malformed", `{"claudeAiOauth":{"refreshToken":"fake-refresh"`, 0600, false, "", "", false},
+		{"shared file", credentials(millis(47 * time.Hour)), 0644, false, "", "", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dataHome, store, account, root, bin := newClaudeSetupProfile(t)
+			if test.credentials != "" {
+				path := filepath.Join(account.NativeDir, ".credentials.json")
+				if err := os.WriteFile(path, []byte(test.credentials), test.mode); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(path, test.mode); err != nil {
+					t.Fatal(err)
+				}
+			}
+			writeClaudeSetupConfig(t, filepath.Join(account.NativeDir, ".claude.json"), `{"hasCompletedOnboarding":true}`)
+			codex, err := store.EnsureAccount("codex", "work")
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeClaudeSetupConfig(t, filepath.Join(codex.NativeDir, ".credentials.json"), credentials(millis(47*time.Hour)))
+			writeClaudeSetupLaunchStub(t, filepath.Join(bin, "claude"))
+			t.Setenv("PATH", bin+":/usr/bin:/bin")
+			t.Setenv("XDG_DATA_HOME", dataHome)
+
+			expires, known := store.claudeLoginExpiry(account)
+			if known != test.known || (!known && !expires.IsZero()) {
+				t.Fatalf("login expiry = %s known=%t, want known=%t", expires, known, test.known)
+			}
+
+			report, err := collectStatus(store, []string{"codex", "claude"}, nil)
+			if err != nil || len(report.Accounts) != 2 || report.SchemaVersion != 1 {
+				t.Fatalf("status report=%+v err=%v", report, err)
+			}
+			var statusOut, doctorOut strings.Builder
+			if err := renderStatusJSON(&statusOut, report); err != nil {
+				t.Fatal(err)
+			}
+			var decoded struct {
+				Accounts []map[string]any `json:"accounts"`
+			}
+			if err := json.Unmarshal([]byte(statusOut.String()), &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if _, has := decoded.Accounts[0]["login_expires_at"]; has || decoded.Accounts[0]["provider"] != "codex" {
+				t.Fatalf("Codex row has a login expiry: %v", decoded.Accounts[0])
+			}
+			stamp, has := decoded.Accounts[1]["login_expires_at"]
+			if has != test.known || (known && stamp != expires.Truncate(time.Second).Format(time.RFC3339)) {
+				t.Fatalf("login_expires_at=%v present=%t, want present=%t for %s", stamp, has, test.known, expires)
+			}
+			now := time.Now()
+			renderStatusPanel(&statusOut, statusProvider{Provider: "codex", Status: "ok"}, report.Accounts[:1], false, now)
+			var panel strings.Builder
+			renderStatusPanel(&panel, statusProvider{Provider: "claude", Status: "ok"}, report.Accounts[1:], false, now)
+			statusOut.WriteString(panel.String())
+			if strings.Contains(panel.String(), "LOGIN") != test.known || strings.Contains(panel.String(), "login") != test.warn ||
+				(test.known && !strings.Contains(panel.String(), "  "+test.cell+" ")) || (test.warn && !strings.Contains(panel.String(), "│   "+test.text+renew)) {
+				t.Fatalf("status panel:\n%s", panel.String())
+			}
+			assertStatusPanelAligned(t, panel.String())
+			if strings.Contains(statusOut.String(), "LOGIN") != test.known {
+				t.Fatalf("Codex panel shows a login column:\n%s", statusOut.String())
+			}
+			color := statusLoginCell(report.Accounts[1], now).paint(true)
+			if wantColor := map[string]string{"2d": "\x1b[33m2d\x1b[0m", "10d": "10d", "expired": "\x1b[31mexpired\x1b[0m"}[test.cell]; color != wantColor {
+				t.Fatalf("colored login cell = %q, want %q", color, wantColor)
+			}
+
+			doctorClaudeLogins(&doctorOut, now)
+			wantDoctor := "claude: account work login expiry unknown\n"
+			if test.known {
+				wantDoctor = "claude: account work " + test.text + "\n"
+			}
+			if test.warn {
+				wantDoctor = "claude: account work " + test.text + renew + "\n"
+			}
+			if doctorOut.String() != wantDoctor {
+				t.Fatalf("doctor output=%q, want %q", doctorOut.String(), wantDoctor)
+			}
+			if code, err := execute(invocation{verb: "doctor", provider: "claude"}); err != nil || code != 0 {
+				t.Fatalf("doctor code=%d err=%v", code, err)
+			}
+
+			exe, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(exe, "-test.run=^TestCodatorPassthroughChild$")
+			cmd.Dir = root
+			cmd.Env = []string{
+				"HOME=" + root,
+				"PATH=" + bin + ":/usr/bin:/bin",
+				"XDG_DATA_HOME=" + dataHome,
+				"CODATOR_PASSTHROUGH_CHILD=1",
+				`CODATOR_TEST_ARGS=["claude","--","hello"]`,
+				"CODATOR_SETUP_SEEN=" + filepath.Join(root, "seen.json"),
+				"CODATOR_SETUP_ARGV=" + filepath.Join(root, "argv"),
+				"CODATOR_SETUP_CWD=" + filepath.Join(root, "cwd"),
+			}
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			if exit, ok := cmd.Run().(*exec.ExitError); !ok || exit.ExitCode() != 23 {
+				t.Fatalf("launch did not reach native Claude: stderr=%q", stderr.String())
+			}
+			wantLaunch := "codator: using claude account work\n"
+			if test.warn {
+				wantLaunch += "codator: claude account work " + test.text + renew + "\n"
+			}
+			if stderr.String() != wantLaunch {
+				t.Fatalf("launch stderr=%q, want %q", stderr.String(), wantLaunch)
+			}
+
+			for _, output := range []string{expires.String(), statusOut.String(), doctorOut.String(), stderr.String()} {
+				if strings.Contains(output, "fake-") {
+					t.Fatalf("output leaks a credentials value: %q", output)
+				}
+			}
+		})
+	}
+}

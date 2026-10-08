@@ -32,6 +32,7 @@ type statusAccount struct {
 	AvailableAt     *time.Time             `json:"available_at,omitempty"`
 	ObservedAt      *time.Time             `json:"observed_at,omitempty"`
 	NextProbeAt     *time.Time             `json:"next_probe_at,omitempty"`
+	LoginExpiresAt  *time.Time             `json:"login_expires_at,omitempty"`
 	ResetCredits    int                    `json:"reset_credits,omitempty"`
 	CreditsBalance  string                 `json:"credits_balance,omitempty"`
 	OnCredits       bool                   `json:"on_credits,omitempty"`

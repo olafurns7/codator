@@ -213,9 +213,15 @@ func collectStatus(store *Store, providers []string, emit func(statusProvider, *
 				}
 				continue
 			}
+			// The login deadline is readable whether or not the account can be probed.
+			var loginExpiresAt *time.Time
+			if expires, ok := store.claudeLoginExpiry(account); ok {
+				loginExpiresAt = statusTime(expires)
+			}
 			lock, err := store.Lock(provider, account.Name)
 			if errors.Is(err, ErrAccountBusy) {
 				row := unavailableStatusAccount(provider, account.Name, "busy", "")
+				row.LoginExpiresAt = loginExpiresAt
 				report.Accounts = append(report.Accounts, row)
 				if emit != nil {
 					emit(providerStatus, &row)
@@ -224,6 +230,7 @@ func collectStatus(store *Store, providers []string, emit func(statusProvider, *
 			}
 			if err != nil {
 				row := unavailableStatusAccount(provider, account.Name, "unknown", "cannot lock profile")
+				row.LoginExpiresAt = loginExpiresAt
 				report.Accounts = append(report.Accounts, row)
 				if emit != nil {
 					emit(providerStatus, &row)
@@ -252,6 +259,7 @@ func collectStatus(store *Store, providers []string, emit func(statusProvider, *
 				return report, signalErr
 			}
 			row := quotaStatusAccount(provider, account.Name, q, err, now, details)
+			row.LoginExpiresAt = loginExpiresAt
 			if provider == "claude" {
 				row.claudeUnavailable = claudeData.Unavailable
 			}
@@ -465,6 +473,13 @@ func execSelected(signals *probeSignalScope, store *Store, lock *AccountLock, pa
 		usage += " (on credits)"
 	}
 	fmt.Fprintf(os.Stderr, "codator: using %s account %s%s\n", provider, account.Name, usage)
+	if provider == "claude" {
+		if expires, ok := store.claudeLoginExpiry(account); ok {
+			if text, warn := loginExpiryText(expires, time.Now()); warn {
+				fmt.Fprintf(os.Stderr, "codator: claude account %s %s; run: codator login claude %s\n", account.Name, text, account.Name)
+			}
+		}
+	}
 	if !credentialMutation(provider, nativeArgs) {
 		if err := lock.Close(); err != nil {
 			return errors.New("cannot release session lock")
