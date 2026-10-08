@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"time"
 )
@@ -42,6 +44,9 @@ func doctorProvider(ctx context.Context, out io.Writer, provider, platform strin
 		return false
 	}
 	fmt.Fprintf(out, "%s: installed (%s)\n", provider, path)
+	if provider == "claude" {
+		doctorClaudeLogins(out, time.Now())
+	}
 	if provider != "codex" {
 		return true
 	}
@@ -54,6 +59,38 @@ func doctorProvider(ctx context.Context, out io.Writer, provider, platform strin
 	default:
 		fmt.Fprintf(out, "codex: sandbox prerequisites are not checked on %s; see %s\n", platform, sandboxGuide)
 		return true
+	}
+}
+
+// doctorClaudeLogins says when each Claude login ends. It only informs: it
+// never fails doctor, and it never creates the profile store.
+func doctorClaudeLogins(out io.Writer, now time.Time) {
+	dataHome := os.Getenv("XDG_DATA_HOME")
+	if dataHome == "" && os.Getenv("HOME") != "" {
+		dataHome = filepath.Join(os.Getenv("HOME"), ".local", "share")
+	}
+	if !filepath.IsAbs(dataHome) {
+		return
+	}
+	root := filepath.Join(filepath.Clean(dataHome), "codator")
+	dir, err := openPathRoot(root, false, true)
+	if err != nil {
+		return
+	}
+	dir.Close()
+	store := &Store{root: root}
+	accounts, _ := store.Accounts("claude")
+	for _, account := range accounts {
+		expires, ok := store.claudeLoginExpiry(account)
+		if !ok {
+			fmt.Fprintf(out, "claude: account %s login expiry unknown\n", account.Name)
+			continue
+		}
+		text, warn := loginExpiryText(expires, now)
+		if warn {
+			text += "; run: codator login claude " + account.Name
+		}
+		fmt.Fprintf(out, "claude: account %s %s\n", account.Name, text)
 	}
 }
 

@@ -108,13 +108,15 @@ Codator reads only a leading `--account NAME`. All other arguments, including `-
 codator codex --account personal exec -- "explain this repository"
 ~~~
 
-`doctor` is read-only. It checks that the native CLI and, on Linux, the Codex sandbox work. It never touches accounts or credentials.
+`doctor` is read-only. It checks that the native CLI and, on Linux, the Codex sandbox work. It never changes accounts or credentials.
 
 Add `--json` to `codator status` for one versioned JSON document with UTC timestamps. The flag can appear before or after the optional provider.
 
 ## How accounts are chosen
 
 Automatic selection skips accounts that are busy, exhausted, spend-capped, not on a subscription, or have unknown quota. `codator status` draws one panel per provider with one row per account: a dot before the name, then a bar for every usage limit with the percent remaining and the time until it resets. `●` means the account can launch, `○` means it cannot (exhausted, unknown or skipped), and `◐` means it is busy. On a terminal the dot is green, yellow on credits or busy, red when exhausted and dim otherwise. A busy, unknown or skipped account with no usage to show says so in place of the bars. A Codex account whose included usage is exhausted but has a Codex credit balance stays eligible on credits; automatic selection uses it only when no other eligible account has included usage left, and status shows `on credits` and the balance. The Claude panel title says how long ago the oldest usage snapshot was taken. Status colors the output only on a terminal, and never when `NO_COLOR` is set or `TERM` is `dumb`.
+
+Claude Code records when a login ends, and a new `codator login claude NAME` is the way to move that date. Where the date is in the profile (Linux), `codator status` shows the days left in a `LOGIN` column, `status --json` reports it as `login_expires_at`, and `codator doctor claude` prints one line per account. With 3 days or less left, status and doctor add the renewal command and a launch prints one extra line; none of this blocks a launch, changes which account is selected, or fails `doctor`. On macOS the login lives in the keychain, which Codator does not read, so the date is unknown there: status shows nothing and doctor says `login expiry unknown`.
 
 ~~~text
 ╭─ codex ─────────────────────────────────────────────────────────╮

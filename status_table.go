@@ -147,11 +147,12 @@ func statusColumns(rows []statusAccount, now time.Time) []statusColumn {
 	columns := []statusColumn{{header: "ACCOUNT", cell: statusAccountCell}}
 	var labels []string
 	seen := map[string]bool{}
-	email, credits, resets, placeholder := false, false, false, false
+	email, credits, resets, placeholder, login := false, false, false, false, false
 	for _, row := range rows {
 		email = email || row.Email != ""
 		credits = credits || row.CreditsBalance != ""
 		resets = resets || row.ResetCredits > 0
+		login = login || row.LoginExpiresAt != nil
 		placeholder = placeholder || statusPlaceholder(row) != ""
 		for _, window := range row.Windows {
 			if !seen[window.Label] {
@@ -183,6 +184,9 @@ func statusColumns(rows []statusAccount, now time.Time) []statusColumn {
 			return cell{{"—", ansiDim}}
 		}})
 	}
+	if login {
+		columns = append(columns, statusColumn{header: "LOGIN", cell: func(row statusAccount) cell { return statusLoginCell(row, now) }})
+	}
 	if credits {
 		columns = append(columns, statusColumn{header: "CREDITS", right: true, cell: func(row statusAccount) cell { return cell{{row.CreditsBalance, ""}} }})
 	}
@@ -195,6 +199,22 @@ func statusColumns(rows []statusAccount, now time.Time) []statusColumn {
 		}})
 	}
 	return columns
+}
+
+// statusLoginCell shows the days until the login ends: yellow from the day
+// Claude Code starts warning, red once it has ended.
+func statusLoginCell(row statusAccount, now time.Time) cell {
+	if row.LoginExpiresAt == nil {
+		return nil
+	}
+	days := loginDaysLeft(*row.LoginExpiresAt, now)
+	switch {
+	case days <= 0:
+		return cell{{"expired", ansiRed}}
+	case days <= claudeLoginWarnDays:
+		return cell{{fmt.Sprintf("%dd", days), ansiYellow}}
+	}
+	return cell{{fmt.Sprintf("%dd", days), ""}}
 }
 
 func statusWindowHeader(label string) string {
@@ -302,6 +322,11 @@ func statusNotes(row statusAccount, now time.Time) []string {
 	}
 	if row.claudeUnavailable != "" {
 		notes = append(notes, "usage unavailable ("+row.claudeUnavailable+")")
+	}
+	if row.LoginExpiresAt != nil {
+		if text, warn := loginExpiryText(*row.LoginExpiresAt, now); warn {
+			notes = append(notes, text+"; run: codator login claude "+row.Account)
+		}
 	}
 	seen := map[string]bool{}
 	for _, window := range row.Windows {

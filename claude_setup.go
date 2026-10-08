@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,6 +93,64 @@ func (s *Store) claudeEmail(account Account) string {
 	}
 	json.Unmarshal(config.values["oauthAccount"], &oauth)
 	return oauth.EmailAddress
+}
+
+// claudeLoginMaxMillis is 9999-12-31T23:59:59.999Z, the last time RFC 3339 can express.
+const claudeLoginMaxMillis = 253402300799999
+
+// claudeLoginExpiry returns when Claude Code recorded that the account's login
+// ends. It decodes that one timestamp and nothing else from the credentials
+// file. Anything missing or malformed is unknown: macOS keeps the login in the
+// keychain, which Codator does not read.
+func (s *Store) claudeLoginExpiry(account Account) (time.Time, bool) {
+	dir, err := s.claudeNativeRoot(account)
+	if err != nil {
+		return time.Time{}, false
+	}
+	defer dir.Close()
+	file, err := openPrivateFile(dir, ".credentials.json", os.O_RDONLY, 0600)
+	if err != nil {
+		return time.Time{}, false
+	}
+	data, err := io.ReadAll(io.LimitReader(file, claudeConfigMaxBytes+1))
+	file.Close()
+	if err != nil || len(data) > claudeConfigMaxBytes {
+		return time.Time{}, false
+	}
+	var credentials struct {
+		OAuth struct {
+			RefreshTokenExpiresAt *float64 `json:"refreshTokenExpiresAt"`
+		} `json:"claudeAiOauth"`
+	}
+	if json.Unmarshal(data, &credentials) != nil {
+		return time.Time{}, false
+	}
+	millis := credentials.OAuth.RefreshTokenExpiresAt
+	if millis == nil || !(*millis >= 1 && *millis <= claudeLoginMaxMillis) {
+		return time.Time{}, false
+	}
+	return time.UnixMilli(int64(*millis)).UTC(), true
+}
+
+// claudeLoginWarnDays is when Claude Code itself starts warning about the login.
+const claudeLoginWarnDays = 3
+
+// loginDaysLeft rounds up like Claude Code does; zero or less means expired.
+func loginDaysLeft(expires, now time.Time) int {
+	// Milliseconds, not a Duration: that saturates near 292 years.
+	return int(math.Ceil(float64(expires.UnixMilli()-now.UnixMilli()) / 86400000))
+}
+
+// loginExpiryText words the time left and reports whether it deserves a warning.
+func loginExpiryText(expires, now time.Time) (string, bool) {
+	days := loginDaysLeft(expires, now)
+	switch {
+	case days <= 0:
+		return "login expired", true
+	case days == 1:
+		return "login expires in 1 day", true
+	}
+	return fmt.Sprintf("login expires in %d days", days), days <= claudeLoginWarnDays
 }
 
 func (s *Store) readClaudeConfig(account Account) (*claudeSetupConfig, error) {
