@@ -309,7 +309,7 @@ func codexWindowLabel(minutes *float64) string {
 
 func codexSubscriptionPlan(planType string) bool {
 	switch planType {
-	case "go", "plus", "pro", "prolite", "team",
+	case "go", "plus", "pro", "promax", "prolite", "team",
 		"self_serve_business_prolite", "self_serve_business_usage_based", "business", "ent26",
 		"enterprise_cbp_automation", "enterprise_cbp_usage_based", "enterprise",
 		"edu", "edu_plus", "edu_pro":

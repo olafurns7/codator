@@ -211,7 +211,7 @@ func TestCodexFreshExhaustionSurvivesMalformedSibling(t *testing.T) {
 
 func TestCodexPlanIdentityGatesAutomaticAndUnknownQuotaSelection(t *testing.T) {
 	for _, plan := range []string{
-		"go", "plus", "pro", "prolite", "team", "self_serve_business_prolite",
+		"go", "plus", "pro", "promax", "prolite", "team", "self_serve_business_prolite",
 		"self_serve_business_usage_based", "business", "ent26", "enterprise_cbp_automation",
 		"enterprise_cbp_usage_based", "enterprise", "edu", "edu_plus", "edu_pro",
 	} {
