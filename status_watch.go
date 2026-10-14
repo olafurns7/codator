@@ -15,7 +15,7 @@ import (
 
 const (
 	watchInterval       = 300 * time.Second
-	watchBackoff        = 900 * time.Second
+	watchBackoff        = probeRetryInterval
 	watchDeadline       = 120 * time.Second
 	watchCleanupGrace   = 5 * time.Second
 	watchCleanupWarning = "codator: probe cleanup uncertain; further refreshes disabled"

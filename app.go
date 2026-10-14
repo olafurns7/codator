@@ -50,9 +50,9 @@ func execute(inv invocation) (int, error) {
 			return 0, watchStatus(store, os.Stdin, os.Stdout, providers)
 		}
 		if inv.jsonOutput {
-			return 0, statusJSON(store, os.Stdout, providers...)
+			return 0, statusJSONRefresh(store, os.Stdout, inv.refresh, providers...)
 		}
-		return 0, status(store, os.Stdout, providers...)
+		return 0, statusRefresh(store, os.Stdout, inv.refresh, providers...)
 	case "launch":
 		return 0, launch(store, inv)
 	default:
@@ -113,6 +113,11 @@ func login(store *Store, inv invocation) error {
 		return err
 	}
 	defer lock.Close()
+	if inv.provider == "codex" {
+		if err := store.invalidateCodexProbeOnLogin(account); err != nil {
+			return errors.New("cannot safely invalidate Codex login state")
+		}
+	}
 	if inv.provider == "claude" {
 		if err := store.invalidateClaudeCacheOnLogin(account); err != nil {
 			return errors.New("cannot safely invalidate Claude usage state")
@@ -154,6 +159,10 @@ func syncSharedMCPForSession(ctx context.Context, store *Store, args []string, o
 // status draws each provider's panel once its accounts are collected, and
 // draws what it has when collection stops early.
 func status(store *Store, out io.Writer, providers ...string) error {
+	return statusRefresh(store, out, false, providers...)
+}
+
+func statusRefresh(store *Store, out io.Writer, refresh bool, providers ...string) error {
 	color := statusColor(out)
 	var current statusProvider
 	var rows []statusAccount
@@ -162,7 +171,7 @@ func status(store *Store, out io.Writer, providers ...string) error {
 			renderStatusPanel(out, current, rows, color, time.Now())
 		}
 	}
-	_, err := collectStatus(store, providers, func(provider statusProvider, account *statusAccount) {
+	_, err := collectStatusRefresh(store, providers, refresh, func(provider statusProvider, account *statusAccount) {
 		if account == nil {
 			flush()
 			current, rows = provider, nil
@@ -175,12 +184,17 @@ func status(store *Store, out io.Writer, providers ...string) error {
 }
 
 func collectStatus(store *Store, providers []string, emit func(statusProvider, *statusAccount)) (statusReport, error) {
-	signals := newProbeSignalScope()
-	defer signals.stopListening()
-	return collectStatusContext(signals.ctx, store, providers, emit)
+	return collectStatusRefresh(store, providers, false, emit)
 }
 
-func collectStatusContext(ctx context.Context, store *Store, providers []string, emit func(statusProvider, *statusAccount)) (statusReport, error) {
+func collectStatusRefresh(store *Store, providers []string, refresh bool, emit func(statusProvider, *statusAccount)) (statusReport, error) {
+	signals := newProbeSignalScope()
+	defer signals.stopListening()
+	return collectStatusContext(signals.ctx, store, providers, emit, refresh)
+}
+
+func collectStatusContext(ctx context.Context, store *Store, providers []string, emit func(statusProvider, *statusAccount), refresh ...bool) (statusReport, error) {
+	force := len(refresh) > 0 && refresh[0]
 	report := statusReport{
 		SchemaVersion: 1,
 		GeneratedAt:   statusUTCSecond(time.Now()),
@@ -249,7 +263,7 @@ func collectStatusContext(ctx context.Context, store *Store, providers []string,
 				}
 				continue
 			}
-			q, err := probeAccount(ctx, store, provider, account, "")
+			q, err := probeAccount(ctx, store, provider, account, "", force)
 			if provider == "claude" {
 				q.Email = store.claudeEmail(account)
 			}
@@ -391,7 +405,7 @@ func launchBest(signals *probeSignalScope, store *Store, path string, inv invoca
 		}
 		if err != nil {
 			lock.Close()
-			skipped = append(skipped, account.Name+": usage check failed")
+			skipped = append(skipped, account.Name+": "+quotaReason(q))
 			continue
 		}
 		if !q.Subscription || !q.Eligible {
@@ -435,7 +449,7 @@ func closeCandidateLocks(candidates []lockedCandidate) {
 }
 
 func quotaReason(q quota) string {
-	if claudeRetryHint(q.Reason) != "" {
+	if q.ProbeFailure != "" || claudeRetryHint(q.Reason) != "" {
 		return q.Reason
 	}
 	if q.Reason == "" {
@@ -448,18 +462,22 @@ func quotaReason(q quota) string {
 }
 
 func claudeVerificationError(message string, q quota) error {
+	if q.ProbeFailure != "" {
+		return fmt.Errorf("%s: %s", message, q.Reason)
+	}
 	if retry := claudeRetryHint(q.Reason); retry != "" {
 		return fmt.Errorf("%s: %s", message, retry)
 	}
 	return errors.New(message)
 }
 
-func probeAccount(ctx context.Context, store *Store, provider string, account Account, model claudeModelFamily) (quota, error) {
+func probeAccount(ctx context.Context, store *Store, provider string, account Account, model claudeModelFamily, refresh ...bool) (quota, error) {
+	force := len(refresh) > 0 && refresh[0]
 	switch provider {
 	case "codex":
-		return probeCodexWithContext(ctx, account)
+		return store.probeCodexAccount(ctx, account, force)
 	case "claude":
-		return store.probeClaudeAccount(ctx, account, model)
+		return store.probeClaudeAccount(ctx, account, model, force)
 	default:
 		return quota{}, errors.New("unknown usage provider")
 	}

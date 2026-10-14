@@ -254,7 +254,7 @@ func TestClaudeStatusBreakdownFromSanitizedCache(t *testing.T) {
 			payload:       failedRefresh,
 			failedRefresh: true,
 			probeFails:    true,
-			want:          []string{"│   usage unavailable (probe reservation is unresolved)", "│   known exhausted: Weekly (Fable)", "│   probe cooldown for "},
+			want:          []string{"│   usage unavailable (last probe failed (transport))", "│   known exhausted: Weekly (Fable)", "transport/network/timeout failure"},
 			wantNot:       []string{"  8%", "  0%"},
 			probeCounts:   []int{1},
 		},
@@ -276,7 +276,7 @@ func TestClaudeStatusBreakdownFromSanitizedCache(t *testing.T) {
 				if err != nil || !subscription || !usable {
 					t.Fatalf("stale fixture usable=%t subscription=%t err=%v", usable, subscription, err)
 				}
-				attemptedAt, outcome, interval, allowance := now.Add(-time.Minute), "reserved", claudeFailureCooldown, uint8(0)
+				attemptedAt, outcome, interval, allowance := now.Add(-30*time.Second), "reserved", probeRetryInterval, uint8(0)
 				if test.failedRefresh {
 					attemptedAt, outcome, interval, allowance = now.Add(-10*time.Minute), "usable", claudeSuccessCooldown, models
 				}
@@ -569,7 +569,7 @@ func TestClaudeProbeCooldownAfterNullOrTransportError(t *testing.T) {
 				t.Fatalf("read cache: found=%t err=%v", found, err)
 			}
 			state.AttemptedAt = time.Now().UTC().Add(-16 * time.Minute)
-			state.NextProbeAt = state.AttemptedAt.Add(claudeFailureCooldown)
+			state.NextProbeAt = state.AttemptedAt.Add(probeRetryInterval)
 			if state.Subscription {
 				state.SubscriptionUntil = state.NextProbeAt
 			}
@@ -791,7 +791,7 @@ func TestClaudeAllowanceCacheIsModelSpecificWhenGlobalResultIsUnknown(t *testing
 	}
 }
 
-func TestClaudeTransportFailureDoesNotRenewCompletedSubscriptionExpiry(t *testing.T) {
+func TestClaudeTransportFailureRetainsIdentityWithoutRenewingQuota(t *testing.T) {
 	dataHome, _, binDir, account := newFakeClaudeProfile(t)
 	store, err := newStore(dataHome)
 	if err != nil {
@@ -804,7 +804,7 @@ func TestClaudeTransportFailureDoesNotRenewCompletedSubscriptionExpiry(t *testin
 	if err != nil || !subscription || usable || models != 0 {
 		t.Fatalf("seed projection sub=%t models=%05b usable=%t err=%v", subscription, models, usable, err)
 	}
-	expiry := attemptedAt.Add(claudeFailureCooldown)
+	expiry := attemptedAt.Add(probeRetryInterval)
 	seed := claudeProbeCache{
 		Version: claudeCacheVersion, AttemptedAt: attemptedAt, NextProbeAt: expiry,
 		Outcome: "unknown", ObservedAt: observedAt, Subscription: true,
@@ -817,8 +817,8 @@ func TestClaudeTransportFailureDoesNotRenewCompletedSubscriptionExpiry(t *testin
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+"/usr/bin:/bin")
 
 	q, err := runClaudeProbe(t, store, account, claudeModelSonnet)
-	if err != nil || q.Subscription || !strings.Contains(q.Reason, claudeRetryPrefix) {
-		t.Fatalf("failed retry renewed subscription: %#v err=%v", q, err)
+	if err != nil || !q.Subscription || q.Known || !canLaunchExplicit(q) || !strings.Contains(q.Reason, claudeRetryPrefix) {
+		t.Fatalf("failed retry lost explicit identity or revived quota: %#v err=%v", q, err)
 	}
 	state, found, err := store.readClaudeProbeCache(account, time.Now().UTC())
 	if err != nil || !found || !state.Subscription || !state.SubscriptionUntil.Equal(expiry) {
@@ -848,7 +848,7 @@ func TestClaudeProbeScoresResetAtResponseCompletion(t *testing.T) {
 	}
 }
 
-func TestClaudeLoginInvalidatesObservationButKeepsCooldown(t *testing.T) {
+func TestClaudeLoginInvalidatesObservationAndAllowsImmediateProbe(t *testing.T) {
 	dataHome, _, binDir, account := newFakeClaudeProfile(t)
 	store, err := newStore(dataHome)
 	if err != nil {
@@ -875,16 +875,16 @@ func TestClaudeLoginInvalidatesObservationButKeepsCooldown(t *testing.T) {
 		t.Fatalf("invalidate login observation: %v", err)
 	}
 	cleared, found, err := store.readClaudeProbeCache(account, time.Now().UTC())
-	if err != nil || !found || !cleared.AttemptedAt.Equal(state.AttemptedAt) || !cleared.NextProbeAt.Equal(state.NextProbeAt) ||
+	if err != nil || !found || cleared.NextProbeAt.After(time.Now()) ||
 		len(cleared.Snapshot) != 0 || cleared.Subscription || !cleared.SubscriptionUntil.IsZero() || cleared.AllowanceModels != 0 || len(cleared.Denials) != 0 {
 		t.Fatalf("login cache state=%#v found=%t err=%v", cleared, found, err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+"/usr/bin:/bin")
-	if q, err := runClaudeProbe(t, store, account, claudeModelSonnet); err != nil || q.Subscription || !strings.Contains(q.Reason, claudeRetryPrefix) {
-		t.Fatalf("login discarded cooldown: quota=%#v err=%v", q, err)
+	if q, err := runClaudeProbe(t, store, account, claudeModelSonnet); err != nil || !q.Subscription || !q.Known || !q.Eligible {
+		t.Fatalf("login did not allow a fresh probe: quota=%#v err=%v", q, err)
 	}
-	if got := fakeClaudeCount(t, account, ".probe-count"); got != 0 {
-		t.Fatalf("login cooldown started %d probes, want 0", got)
+	if got := fakeClaudeCount(t, account, ".probe-count"); got != 1 {
+		t.Fatalf("login started %d probes, want 1", got)
 	}
 }
 

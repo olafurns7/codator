@@ -23,7 +23,7 @@ On Linux, Codex also needs `bubblewrap` for its sandbox: `sudo apt install bubbl
 ~~~sh
 (
 set -eu
-version=${CODATOR_VERSION:-v0.9.1}
+version=${CODATOR_VERSION:-v0.10.0}
 installer=$(mktemp)
 trap 'rm -f "$installer"' EXIT
 curl -fsSL -o "$installer" "https://github.com/olafurns7/codator/releases/download/$version/install.sh"
@@ -49,6 +49,7 @@ Everything after `--` goes to the native login command unchanged.
 codator codex                       # picks the Codex account with the most quota left
 codator claude --account personal   # or choose a label yourself
 codator status                      # show every account's remaining quota
+codator status --refresh claude     # retry Claude usage despite its normal cooldown
 ~~~
 
 That's all you need. `codator codex` and `codator claude` keep the native CLI's normal sandbox and approval prompts. The rest of this page covers optional shortcuts (which turn all of those off), MCP servers, and reference details.
@@ -96,7 +97,8 @@ export CODATOR_SHIMS=1
 codator login codex|claude NAME [-- native-login-options]
 codator codex  [--account NAME] [native arguments]
 codator claude [--account NAME] [native arguments]
-codator status [--json | --watch] [codex|claude]
+codator status [--json] [--refresh] [codex|claude]
+codator status --watch [codex|claude]
 codator doctor [codex|claude]
 codator mcp login SERVER [--account NAME] [--timeout 30m] [--scopes a,b]
 codator mcp share
@@ -112,9 +114,9 @@ codator codex --account personal exec -- "explain this repository"
 
 Add `--json` to `codator status` for one versioned JSON document with UTC timestamps. The flag can appear before or after the optional provider.
 
-Use `codator status --watch [codex|claude]` to keep the same boxed tables open. It requires terminal input/output and a nonempty `TERM` other than `dumb`; `NO_COLOR` keeps bars and dots without color. `--watch` and `--json` cannot be combined.
+Use `codator status --watch [codex|claude]` to keep the same boxed tables open. It requires terminal input/output and a nonempty `TERM` other than `dumb`; `NO_COLOR` keeps bars and dots without color. `--watch` cannot be combined with `--json` or `--refresh`. Watch collections, including manual `r`, honor normal per-account cooldowns and auth denials; use one-shot `status --refresh` for an owner-forced probe.
 
-- `r` uses the shared refresh gate; repeated presses are discarded. The first usable view collects immediately, then waits at least 300 seconds after successful completion or 900 seconds after command-error cleanup. Scroll, resize and redraw do not probe.
+- `r` uses the shared refresh gate; repeated presses are discarded. The first usable view collects immediately, then waits at least 300 seconds after successful completion or 60 seconds after command-error cleanup. Scroll, resize and redraw do not probe.
 - Arrows and `h`/`l` scroll the intrinsic tables vertically/horizontally; PgUp/PgDn and Home/End reach all accounts, columns and notes. A terminal smaller than 20 columns by 8 rows defers new collections until resized.
 - `[`/`]` select an account; Enter opens/closes its full detail. At 132x18 or larger, table and detail share the body and Tab switches focus; smaller panes show detail in the full body. Selecting reveals the ACCOUNT column; manual scrolling stays available. Busy means profile-lock contention, not an active session.
 - `s` cycles label/headroom/nearest-reset ordering within providers; `p` cycles loaded-provider filters and `f` state filters. `/` edits a case-insensitive account-name substring (128 UTF-8 bytes): Enter applies, Ctrl-G cancels, Ctrl-U clears and Backspace removes a grapheme. In name entry q/r/h/l are text; Esc/Ctrl-C still quit. Filters intersect, affect only the view and never change the unfiltered next-account estimate or collect other providers. Sort order updates on snapshots/control changes, while freshness labels keep updating between them.
@@ -146,12 +148,14 @@ Claude Code records when a login ends, and a new `codator login claude NAME` is 
 A dim line under an account explains anything a cell cannot, such as why it is skipped:
 
 - **busy:** another Codator command, such as a login, holds that profile's lock.
-- **unknown:** Codator could not read reliable usage data. Automatic selection skips it. An explicit `--account` still launches if the subscription is verified.
+- **unknown:** Codator could not read reliable usage data. Automatic selection skips it. An explicit `--account` can still launch a previously verified subscription during a transport failure or probe cooldown, with unknown quota. Known login failures and exhausted quota remain blocked.
 - **cooldown (Claude):** Codator is waiting before it retries a usage probe that failed.
 
 Codator counts Claude's session and weekly limits separately from its model-specific weekly limits. It checks a recognized `--model`, or for a plain launch, each account's `ANTHROPIC_MODEL`, saved `settings.json` model, or `ANTHROPIC_DEFAULT_MODEL` in that order. With no model override, it uses a bounded local `claude --version` check to recognize the Opus default in Claude Code 2.1.280 and later 2.1.x releases. An exhausted Fable limit therefore does not block a known Opus launch. Older or unrecognized versions, unfamiliar models, conflicting settings, and ambiguous native arguments keep the conservative all-model check. Codator forwards native arguments unchanged and never sets or enforces spending caps.
 
-Claude usage is cached on disk per account for 5 minutes after success and 15 minutes after failed or unknown probes; account locks and probe reservations prevent duplicate concurrent probes.
+Claude usage is cached on disk per account for 5 minutes after success. Network errors, timeouts, malformed or unknown answers, and interrupted probe reservations retry after 60 seconds. Only a provider rate-limit error (429 or equivalent) uses the 15-minute fallback; a supplied Retry-After sets the retry deadline instead. Login failures remain blocked until you run the exact `codator login claude NAME` command shown in status and launch errors, or a forced refresh verifies recovery. Codex shows `codator login codex NAME` for the same auth failures and remembers them without adding a usage cache.
+
+Use `codator status --refresh [codex|claude]` (also with `--json`) to bypass Claude's normal cooldown or retry a remembered login failure. Forced retries have a 10-second minimum interval; profile locks and durable reservations prevent concurrent Claude probes. Codex usage probes already run live, so it needs that interval only when refreshing a remembered auth failure. Automatic selection continues to skip unknown usage. During a network outage, `codator claude --account NAME` can launch with unknown quota if that subscription was previously verified and has no known login or quota denial. Legacy failed Claude caches have their retry window shortened to 60 seconds without treating their ambiguous failures as evidence of a valid login. See [the provider contract](docs/provider-contract.md) for the failure and cache rules.
 
 ## Shared configuration
 

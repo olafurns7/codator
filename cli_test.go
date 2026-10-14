@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -213,6 +215,36 @@ func TestParseStatusWatchArguments(t *testing.T) {
 	for _, args := range [][]string{{"status", "--watch", "--watch"}, {"status", "--watch", "--json"}, {"status", "--json", "--watch"}, {"status", "--watch", "both"}} {
 		if _, err := parseInvocation(args); !errors.Is(err, errUsage) {
 			t.Fatalf("accepted %v", args)
+		}
+	}
+}
+
+func TestStatusWatchRefreshCombinations(t *testing.T) {
+	for _, args := range [][]string{
+		{"status", "--refresh", "--json", "claude"}, {"status", "codex", "--json", "--refresh"}, {"status", "--json", "claude", "--refresh"},
+	} {
+		inv, err := parseInvocation(args)
+		if err != nil || !inv.refresh || !inv.jsonOutput || inv.watch {
+			t.Fatalf("parse %v: %+v %v", args, inv, err)
+		}
+	}
+	for _, args := range [][]string{
+		{"status", "--watch", "--refresh"}, {"status", "--refresh", "--watch"},
+		{"status", "--watch", "claude", "--refresh"}, {"status", "--refresh", "codex", "--watch"},
+		{"status", "--watch", "--json", "--refresh"}, {"status", "--refresh", "--json", "--watch"},
+		{"status", "--refresh", "--refresh"},
+	} {
+		if _, err := parseInvocation(args); !errors.Is(err, errUsage) {
+			t.Fatalf("accepted %v: %v", args, err)
+		}
+		home := t.TempDir()
+		dataHome := filepath.Join(home, "must-not-create")
+		code, _, stderr := runCodatorProcess(t, home, dataHome, t.TempDir(), args)
+		if code != 2 {
+			t.Fatalf("rejection reached terminal/store: %v code=%d stderr=%q", args, code, stderr)
+		}
+		if _, err := os.Stat(dataHome); !os.IsNotExist(err) {
+			t.Fatalf("invalid flags touched store: %v", err)
 		}
 	}
 }

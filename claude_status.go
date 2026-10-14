@@ -21,8 +21,11 @@ func claudeStatusDetails(state claudeProbeCache, found bool, readErr error, now 
 	if !found {
 		return claudeStatusData{Unavailable: "no stored observation"}
 	}
-	if state.Outcome == "reserved" {
+	switch state.Outcome {
+	case "reserved":
 		return claudeStatusUnavailableDetails(state, "probe reservation is unresolved", now)
+	case "auth", "transport", "rate_limit", "malformed":
+		return claudeStatusUnavailableDetails(state, "last probe failed ("+state.Outcome+")", now)
 	}
 	if state.ObservedAt.IsZero() {
 		return claudeStatusUnavailableDetails(state, "snapshot is missing", now)
