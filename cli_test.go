@@ -202,3 +202,17 @@ func TestClaudeImplicitModelOnlyWithPlainNativeArgs(t *testing.T) {
 		}
 	}
 }
+
+func TestParseStatusWatchArguments(t *testing.T) {
+	for _, args := range [][]string{{"status", "--watch"}, {"status", "--watch", "codex"}, {"status", "claude", "--watch"}} {
+		inv, err := parseInvocation(args)
+		if err != nil || !inv.watch || inv.jsonOutput {
+			t.Fatalf("watch parse %v: %+v %v", args, inv, err)
+		}
+	}
+	for _, args := range [][]string{{"status", "--watch", "--watch"}, {"status", "--watch", "--json"}, {"status", "--json", "--watch"}, {"status", "--watch", "both"}} {
+		if _, err := parseInvocation(args); !errors.Is(err, errUsage) {
+			t.Fatalf("accepted %v", args)
+		}
+	}
+}

@@ -170,6 +170,11 @@ func probeCodexContext(ctx context.Context, account Account) (quota, error) {
 	if err := cmd.Start(); err != nil {
 		return quota{}, errors.New("cannot start Codex usage check")
 	}
+	stopClosing := context.AfterFunc(ctx, func() {
+		_ = stdin.Close()
+		_ = stdout.Close()
+	})
+	defer stopClosing()
 	defer finishProbe(cmd)
 	defer stdin.Close()
 

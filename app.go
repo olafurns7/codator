@@ -22,6 +22,11 @@ func execute(inv invocation) (int, error) {
 		}
 		return doctor(os.Stdout, providers...)
 	}
+	if inv.watch {
+		if err := validateWatchTerminal(os.Stdin, os.Stdout); err != nil {
+			return 1, err
+		}
+	}
 	store, err := storeFromEnv()
 	if err != nil {
 		return 1, err
@@ -40,6 +45,9 @@ func execute(inv invocation) (int, error) {
 		providers := []string{inv.provider}
 		if inv.provider == "" {
 			providers = []string{"codex", "claude"}
+		}
+		if inv.watch {
+			return 0, watchStatus(store, os.Stdin, os.Stdout, providers)
 		}
 		if inv.jsonOutput {
 			return 0, statusJSON(store, os.Stdout, providers...)
@@ -167,16 +175,20 @@ func status(store *Store, out io.Writer, providers ...string) error {
 }
 
 func collectStatus(store *Store, providers []string, emit func(statusProvider, *statusAccount)) (statusReport, error) {
+	signals := newProbeSignalScope()
+	defer signals.stopListening()
+	return collectStatusContext(signals.ctx, store, providers, emit)
+}
+
+func collectStatusContext(ctx context.Context, store *Store, providers []string, emit func(statusProvider, *statusAccount)) (statusReport, error) {
 	report := statusReport{
 		SchemaVersion: 1,
 		GeneratedAt:   statusUTCSecond(time.Now()),
 		Providers:     make([]statusProvider, 0, len(providers)),
 		Accounts:      make([]statusAccount, 0),
 	}
-	signals := newProbeSignalScope()
-	defer signals.stopListening()
 	for _, provider := range providers {
-		if err := signals.ctx.Err(); err != nil {
+		if err := ctx.Err(); err != nil {
 			return report, err
 		}
 		accounts, err := store.Accounts(provider)
@@ -202,7 +214,7 @@ func collectStatus(store *Store, providers []string, emit func(statusProvider, *
 			emit(providerStatus, nil)
 		}
 		for _, account := range accounts {
-			if err := signals.ctx.Err(); err != nil {
+			if err := ctx.Err(); err != nil {
 				return report, err
 			}
 			if account.Err != nil {
@@ -237,7 +249,7 @@ func collectStatus(store *Store, providers []string, emit func(statusProvider, *
 				}
 				continue
 			}
-			q, err := probeAccount(signals.ctx, store, provider, account, "")
+			q, err := probeAccount(ctx, store, provider, account, "")
 			if provider == "claude" {
 				q.Email = store.claudeEmail(account)
 			}
@@ -255,7 +267,7 @@ func collectStatus(store *Store, providers []string, emit func(statusProvider, *
 				}
 			}
 			lock.Close()
-			if signalErr := signals.ctx.Err(); signalErr != nil {
+			if signalErr := ctx.Err(); signalErr != nil {
 				return report, signalErr
 			}
 			row := quotaStatusAccount(provider, account.Name, q, err, now, details)

@@ -12,14 +12,17 @@ const usage = `Usage:
   codator mcp login SERVER [--account NAME] [--timeout 30m] [--scopes SCOPE,...]
   codator mcp share
   codator doctor [codex|claude]
-  codator status [--json] [codex|claude]
+  codator status [--json | --watch] [codex|claude]
   codator codex [--account NAME] [native arguments]
   codator claude [--account NAME] [native arguments]
   codator --help
 
 For launch, Codator consumes only a leading --account NAME pair. Every
 remaining argument, including --, is passed unchanged to the native CLI.
-Status accepts --json before or after its optional provider.
+Status accepts --json or --watch before or after its optional provider.
+Watch: r refresh (300s success / 900s error gate); arrows/h/l and PgUp/PgDn
+scroll; Home/End; q/Esc/Ctrl-C quit. Requires a terminal; honors NO_COLOR.
+The gate covers one running view; other invocations and restarts add probes.
 MCP login uses the current profile, --account NAME, or any shared profile.
 It waits 30 minutes and accepts a pasted browser callback URL on stdin.
 Use mcp share to share MCP settings and keyring logins across Codex accounts.
@@ -40,6 +43,7 @@ type invocation struct {
 	account    string
 	args       []string
 	jsonOutput bool
+	watch      bool
 	mcp        *mcpLoginOptions
 }
 
@@ -67,11 +71,16 @@ func parseInvocation(args []string) (invocation, error) {
 			switch {
 			case arg == "--json" && !inv.jsonOutput:
 				inv.jsonOutput = true
+			case arg == "--watch" && !inv.watch:
+				inv.watch = true
 			case validProvider(arg) && inv.provider == "":
 				inv.provider = arg
 			default:
-				return invocation{}, fmt.Errorf("%w: status accepts only --json, codex or claude", errUsage)
+				return invocation{}, fmt.Errorf("%w: status accepts only --json or --watch, codex or claude", errUsage)
 			}
+		}
+		if inv.watch && inv.jsonOutput {
+			return invocation{}, fmt.Errorf("%w: --watch and --json cannot be combined", errUsage)
 		}
 		return inv, nil
 	case "doctor":
