@@ -104,7 +104,8 @@ def resize(fd, cols, rows):
 
 def run_case(name, action=b"q", sig=None, busy=False, no_color=False, rich=False, tiny=False, injection=False):
     with tempfile.TemporaryDirectory(prefix="codator-watch-pty-") as tmp:
-        root = pathlib.Path(tmp)
+        # The store refuses symlinked ancestors such as macOS /var -> /private/var.
+        root = pathlib.Path(tmp).resolve()
         env, log = fixture(root, busy, injection)
         if no_color:
             env["NO_COLOR"] = "1"
@@ -185,7 +186,7 @@ def run_case(name, action=b"q", sig=None, busy=False, no_color=False, rich=False
 
 def view_case(no_color=False):
     with tempfile.TemporaryDirectory(prefix="codator-watch-view-pty-") as tmp:
-        root=pathlib.Path(tmp)
+        root=pathlib.Path(tmp).resolve()
         env,log=fixture(root)
         (root / "data/codator/codex/other/native").mkdir(parents=True,mode=0o700)
         if no_color: env["NO_COLOR"]="1"

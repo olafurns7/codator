@@ -213,7 +213,16 @@ func TestWatchPTY(t *testing.T) {
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("PTY binary build: %v\n%s", err, output)
 	}
+	// A symlinked TMPDIR gives every platform macOS's /var -> /private/var shape.
+	tmp, real := filepath.Join(t.TempDir(), "tmp"), t.TempDir()
+	if err := os.Chmod(real, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, tmp); err != nil {
+		t.Fatal(err)
+	}
 	cmd := exec.Command(python, "tests/status_watch_pty.py", binary)
+	cmd.Env = append(os.Environ(), "TMPDIR="+tmp)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("PTY: %v\n%s", err, output)
 	} else {
