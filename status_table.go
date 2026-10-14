@@ -64,6 +64,18 @@ func statusColor(out io.Writer) bool {
 
 // renderStatusPanel draws one provider as a boxed table with one row per account.
 func renderStatusPanel(out io.Writer, provider statusProvider, rows []statusAccount, color bool, now time.Time) {
+	for _, line := range statusPanelLines(provider, rows, now) {
+		fmt.Fprintln(out, line.paint(color))
+	}
+}
+
+func statusPanelLines(provider statusProvider, rows []statusAccount, now time.Time) []cell {
+	lines, _ := statusPanelLayout(provider, rows, now)
+	return lines
+}
+
+// Row offsets follow input indices, including the top border and variable notes.
+func statusPanelLayout(provider statusProvider, rows []statusAccount, now time.Time) ([]cell, []int) {
 	title := provider.Provider
 	var lines [][]cell // each line is a list of cells; a single-cell line is a note
 	switch provider.Status {
@@ -124,7 +136,9 @@ func renderStatusPanel(out io.Writer, provider statusProvider, rows []statusAcco
 	if len(rows) > 0 {
 		body = append(body, join(header))
 	}
+	rowLines := make([]int, 0, len(table))
 	for _, row := range table {
+		rowLines = append(rowLines, len(body)+1)
 		body = append(body, join(row.cells))
 		for _, note := range row.notes {
 			body = append(body, cell{{"  " + note, ansiDim}})
@@ -135,12 +149,14 @@ func renderStatusPanel(out io.Writer, provider statusProvider, rows []statusAcco
 	for _, line := range body {
 		inner = max(inner, line.width()+2)
 	}
-	border := func(text string) string { return paint(text, ansiDim, color) }
-	fmt.Fprintln(out, border("╭─ ")+title+border(" "+strings.Repeat("─", inner-utf8.RuneCountInString(title)-3)+"╮"))
+	linesOut := []cell{{{"╭─ ", ansiDim}, {title, ""}, {" " + strings.Repeat("─", inner-utf8.RuneCountInString(title)-3) + "╮", ansiDim}}}
 	for _, line := range body {
-		fmt.Fprintln(out, border("│")+" "+line.paint(color)+strings.Repeat(" ", inner-line.width()-1)+border("│"))
+		framed := cell{{"│", ansiDim}, {" ", ""}}
+		framed = append(framed, line...)
+		framed = append(framed, span{strings.Repeat(" ", inner-line.width()-1), ""}, span{"│", ansiDim})
+		linesOut = append(linesOut, framed)
 	}
-	fmt.Fprintln(out, border("╰"+strings.Repeat("─", inner)+"╯"))
+	return append(linesOut, cell{{"╰" + strings.Repeat("─", inner) + "╯", ansiDim}}), rowLines
 }
 
 func statusColumns(rows []statusAccount, now time.Time) []statusColumn {

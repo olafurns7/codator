@@ -96,7 +96,7 @@ export CODATOR_SHIMS=1
 codator login codex|claude NAME [-- native-login-options]
 codator codex  [--account NAME] [native arguments]
 codator claude [--account NAME] [native arguments]
-codator status [--json] [codex|claude]
+codator status [--json | --watch] [codex|claude]
 codator doctor [codex|claude]
 codator mcp login SERVER [--account NAME] [--timeout 30m] [--scopes a,b]
 codator mcp share
@@ -111,6 +111,22 @@ codator codex --account personal exec -- "explain this repository"
 `doctor` is read-only. It checks that the native CLI and, on Linux, the Codex sandbox work. It never changes accounts or credentials.
 
 Add `--json` to `codator status` for one versioned JSON document with UTC timestamps. The flag can appear before or after the optional provider.
+
+Use `codator status --watch [codex|claude]` to keep the same boxed tables open. It requires terminal input/output and a nonempty `TERM` other than `dumb`; `NO_COLOR` keeps bars and dots without color. `--watch` and `--json` cannot be combined.
+
+- `r` uses the shared refresh gate; repeated presses are discarded. The first usable view collects immediately, then waits at least 300 seconds after successful completion or 900 seconds after command-error cleanup. Scroll, resize and redraw do not probe.
+- Arrows and `h`/`l` scroll the intrinsic tables vertically/horizontally; PgUp/PgDn and Home/End reach all accounts, columns and notes. A terminal smaller than 20 columns by 8 rows defers new collections until resized.
+- `[`/`]` select an account; Enter opens/closes its full detail. At 132x18 or larger, table and detail share the body and Tab switches focus; smaller panes show detail in the full body. Selecting reveals the ACCOUNT column; manual scrolling stays available. Busy means profile-lock contention, not an active session.
+- `s` cycles label/headroom/nearest-reset ordering within providers; `p` cycles loaded-provider filters and `f` state filters. `/` edits a case-insensitive account-name substring (128 UTF-8 bytes): Enter applies, Ctrl-G cancels, Ctrl-U clears and Backspace removes a grapheme. In name entry q/r/h/l are text; Esc/Ctrl-C still quit. Filters intersect, affect only the view and never change the unfiltered next-account estimate or collect other providers. Sort order updates on snapshots/control changes, while freshness labels keep updating between them.
+- `t` opens the filtered reset timeline; `a` opens the unfiltered availability overview. Press the active view key to return to tables. In overview, `[`/`]` choose a provider/state bucket and Enter applies it, clears the name filter and returns to tables. Counts describe recorded rows; fresh launchable/headroom/reset aggregates require qualified provider/account observations. Window reset, denial-until and available-at stay distinct; passed times await fresh data and unknown timestamps stay unknown. These controls add no probes.
+- `g` opens session sparklines of **used percent**; `c` opens the snapshot change feed. The active view key returns to tables. These are observations from completed polls, not live activity: intervening activity is unknown and busy means profile-lock contention. Codex points use collection-start UTC; Claude points use `ObservedAt`, so cached observations do not repeat. Spaces mark gaps and `|` starts a segment after reset changes, decreases or missing data; there is no interpolation or inferred replenishment. Filters only affect display.
+- History is memory-only and ends on quit: at most 128 series with 72 slots each, 128 semantic summaries (including provider baselines), and 128 changes. Raw identity components over 256 bytes or ambiguous duplicate labels are explicitly untracked; retained display text is capped at 512 bytes. Oldest updated records are evicted deterministically. Incomplete/failed/unknown snapshots cannot prove absence; first, omitted and evicted returns establish baselines. After identity/summary omissions, addition events remain baseline-only for this run. Feed events ignore countdown/probe-time churn and unchanged quota observations. Narrow prose, headers and footers show an ellipsis when clipped; horizontal scrolling reveals full body data.
+- Smaller panes keep table borders closed while interiors scroll; `…` marks clipped detail, whose full text remains reachable with horizontal scrolling. Identical displayed timestamps share their event labels and are marked `same UTC second`; differing displayed times remain separate.
+- `q`, Esc or Ctrl-C quits and restores the terminal. Collection has a 120-second deadline; cancellation cleanup is bounded to five further seconds. Uncertain cleanup disables later refreshes and warns after terminal restoration; detached descendants are not guaranteed removed.
+
+Watch retains the last successful snapshot after a command error and labels stale data. Source collection time, Claude observation age and successful completion remain separate; a completed collection does not make cached quota fresh. Next-account text is only a fresh-snapshot estimate, with Claude's all-model caveat; a later launch can choose differently. Unknown/busy rows remain unknown, and passing a reset does not invent fresh quota.
+
+The gate covers one continuously running view. Restarts, other views/hosts and ordinary status calls can add probes; five minutes is not a vendor polling guarantee. Existing native probes may update authentication and local lock/usage-cache state. Watch adds no provider requests or account commands beyond status collection.
 
 ## How accounts are chosen
 

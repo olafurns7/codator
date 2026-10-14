@@ -1,10 +1,16 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -607,3 +613,66 @@ func TestCodexArgsPointsBundledMarketplaceAtSelectedHome(t *testing.T) {
 }
 
 func stringPtr(value string) *string { return &value }
+
+func TestWatchCodexEscapedPipeReleasesLock(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("escaped-pipe prerequisite: python3 unavailable")
+	}
+	store, err := newStore(tempDataHome(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := store.EnsureAccount("codex", "probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	pidFile := filepath.Join(bin, "escaped.pid")
+	script := fmt.Sprintf("#!%s\nimport os,time\nif os.fork()==0:\n os.setsid()\n with open(%q,'w') as f: f.write(str(os.getpid()))\n time.sleep(30)\n os._exit(0)\ntime.sleep(30)\n", python, pidFile)
+	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := collectStatusContext(ctx, store, []string{"codex"}, nil); done <- err }()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	var pid int
+	defer func() {
+		if pid > 0 {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	}()
+	startup := time.NewTimer(time.Second)
+	defer startup.Stop()
+	for pid == 0 {
+		select {
+		case <-ticker.C:
+			data, err := os.ReadFile(pidFile)
+			if err == nil {
+				pid, _ = strconv.Atoi(string(data))
+			}
+		case <-startup.C:
+			t.Fatal("escaped fixture did not start")
+		case err := <-done:
+			t.Fatalf("collector returned before fixture: %v", err)
+		}
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("collector cancellation: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("escaped stdout blocked collector")
+	}
+	lock, err := store.Lock("codex", account.Name)
+	if err != nil {
+		t.Fatalf("account lock retained: %v", err)
+	}
+	lock.Close()
+}
