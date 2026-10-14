@@ -171,15 +171,11 @@ def run_case(name, action=b"q", sig=None, busy=False, no_color=False, rich=False
                 for field in ("╭─ codex", "ACCOUNT", "EMAIL", "5H", "WEEKLY", "CREDITS", "RST", "fixture@example.invalid", "75%", "50%"):
                     assert field in view, (name, "missing rich field", field, view)
                 assert SGR.search(all_data), "color missing"
-                # Split arrow sequence must scroll, never terminate as bare Escape.
-                split_start = time.monotonic()
-                os.write(master, b"\x1b")
-                all_data.extend(drain(master, 0.025))
-                os.write(master, b"[")
-                all_data.extend(drain(master, 0.025))
-                os.write(master, b"C")
+                # Atomic arrow smoke; timed split/150ms policy: TestWatchKeysSplitAndBounded.
+                arrow_start = time.monotonic()
+                os.write(master, b"\x1b[C")
                 all_data.extend(drain(master, 0.3))
-                assert proc.poll() is None, ("split arrow quit", proc.poll(), round(time.monotonic() - split_start, 4), bytes(all_data[-500:]))
+                assert proc.poll() is None, ("arrow quit", proc.poll(), round(time.monotonic() - arrow_start, 4), bytes(all_data[-500:]))
                 resize(slave, 40, 10)
                 proc.send_signal(signal.SIGWINCH)
                 narrow = drain(master, 0.3)
@@ -365,7 +361,7 @@ elif len(sys.argv)>2 and sys.argv[2]=="view":
 else:
     termios_selfcheck()
     rejection_cases()
-    run_case("rich/split sequences/scroll/resize/manual/no overlap/idle", rich=True)
+    run_case("rich/atomic arrow/scroll/resize/manual/no overlap/idle", rich=True)
     run_case("NO_COLOR", no_color=True)
     run_case("ANSI/control/bidi injection", injection=True)
     run_case("tiny defers collection then resize", tiny=True)
