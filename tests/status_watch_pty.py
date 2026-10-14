@@ -102,6 +102,15 @@ def resize(fd, cols, rows):
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
 
+def assert_termios_restored(fd, before, label):
+    after = termios.tcgetattr(fd)
+    # Exact check; on failure report every changed field for the platform log.
+    fields = ("iflag", "oflag", "cflag", "lflag", "ispeed", "ospeed")
+    delta = {f: (hex(b), hex(a), "xor " + hex(a ^ b)) for f, b, a in zip(fields, before, after) if a != b}
+    delta.update({"cc[%d]" % i: (b, a) for i, (b, a) in enumerate(zip(before[6], after[6])) if a != b})
+    assert after == before, (label, "termios not restored", sys.platform, delta, before, after)
+
+
 def run_case(name, action=b"q", sig=None, busy=False, no_color=False, rich=False, tiny=False, injection=False):
     with tempfile.TemporaryDirectory(prefix="codator-watch-pty-") as tmp:
         # The store refuses symlinked ancestors such as macOS /var -> /private/var.
@@ -169,7 +178,7 @@ def run_case(name, action=b"q", sig=None, busy=False, no_color=False, rich=False
             assert proc.poll() == 0, (name, "quit/cleanup failed", proc.poll(), bytes(all_data[-500:]))
             all_data.extend(drain(master, 0.1))
             assert b"\x1b[?25h\x1b[?1049l" in all_data, "screen/cursor not restored"
-            assert termios.tcgetattr(slave) == before, "termios not restored"
+            assert_termios_restored(slave, before, name)
             assert log.read_text().splitlines() == ["probe"], "quit started another probe"
             if rich and (dest := os.environ.get("CODATOR_WATCH_CAPTURE_DIR")):
                 path = pathlib.Path(dest) / "pty-rich-ansi.txt"
@@ -271,7 +280,8 @@ def view_case(no_color=False):
             else: assert SGR.search(all_data),"view color"
             os.write(master,b"\x1b[15~q")
             proc.wait(timeout=4);all_data.extend(drain(master,0.1))
-            assert proc.returncode==0 and termios.tcgetattr(slave)==before,"view restoration"
+            assert proc.returncode==0,"view exit"
+            assert_termios_restored(slave,before,"view restoration")
             assert b"\x1b[?25h\x1b[?1049l" in all_data,"view screen/cursor"
             if dest:=os.environ.get("CODATOR_RICHER_S1_CAPTURE_DIR"):
                 label="plain" if no_color else "ansi"
