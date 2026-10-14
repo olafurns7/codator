@@ -102,13 +102,45 @@ def resize(fd, cols, rows):
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
 
-def assert_termios_restored(fd, before, label):
-    after = termios.tcgetattr(fd)
-    # Exact check; on failure report every changed field for the platform log.
+# XNU bsd/sys/termios.h:259 "retype pending input (state)". ttioctl TIOCSETA
+# (bsd/kern/tty.c:1358-1361,1391) ORs it into lflag whenever ICANON turns back
+# on, and only a later slave read (tty.c:1730) clears it: kernel state, not a
+# setting the watcher restores.
+DARWIN_PENDIN = 0x20000000
+
+
+def termios_delta(before, after, platform):
+    """Changed fields; exact except Darwin's kernel-set PENDIN after raw mode."""
+    after = list(after)
+    if platform == "darwin" and not before[3] & DARWIN_PENDIN:
+        after[3] &= ~DARWIN_PENDIN
     fields = ("iflag", "oflag", "cflag", "lflag", "ispeed", "ospeed")
     delta = {f: (hex(b), hex(a), "xor " + hex(a ^ b)) for f, b, a in zip(fields, before, after) if a != b}
     delta.update({"cc[%d]" % i: (b, a) for i, (b, a) in enumerate(zip(before[6], after[6])) if a != b})
-    assert after == before, (label, "termios not restored", sys.platform, delta, before, after)
+    assert bool(delta) == (after != list(before)), "delta missed a field"
+    return delta
+
+
+def termios_selfcheck():
+    # Hosted darwin arm64 tuple (run 38651859651): sole delta lflag 0x5cb -> 0x200005cb.
+    cc = [bytes([c]) for c in (4, 255, 255, 127, 23, 21, 18, 255, 3, 28, 26, 25, 17, 19, 22, 15, 1, 0, 20, 255)]
+    before = [11010, 3, 19200, 0x5cb, 9600, 9600, cc]
+    pendin = before[:3] + [0x200005cb] + before[4:]
+    assert termios_delta(before, before, "darwin") == {} and termios_delta(before, before, "linux") == {}
+    assert termios_delta(before, pendin, "darwin") == {}, "darwin PENDIN not normalized"
+    assert termios_delta(before, pendin, "linux"), "PENDIN accepted off darwin"
+    cleared = [before[:3] + [0x200005cb] + before[4:], before]
+    assert termios_delta(*cleared, "darwin"), "PENDIN loss accepted"
+    for i, value in ((0, 11011), (1, 2), (2, 19201), (3, 0x200005ca), (4, 38400), (5, 38400)):
+        assert termios_delta(before, before[:i] + [value] + before[i+1:], "darwin"), ("field change accepted", i)
+    assert termios_delta(before, before[:6] + [cc[:5] + [b"\x00"] + cc[6:]], "darwin"), "cc change accepted"
+    print("PASS termios restoration self-check")
+
+
+def assert_termios_restored(fd, before, label):
+    after = termios.tcgetattr(fd)
+    delta = termios_delta(before, after, sys.platform)
+    assert not delta, (label, "termios not restored", sys.platform, delta, before, after)
 
 
 def run_case(name, action=b"q", sig=None, busy=False, no_color=False, rich=False, tiny=False, injection=False):
@@ -140,13 +172,14 @@ def run_case(name, action=b"q", sig=None, busy=False, no_color=False, rich=False
                     assert field in view, (name, "missing rich field", field, view)
                 assert SGR.search(all_data), "color missing"
                 # Split arrow sequence must scroll, never terminate as bare Escape.
+                split_start = time.monotonic()
                 os.write(master, b"\x1b")
                 all_data.extend(drain(master, 0.025))
                 os.write(master, b"[")
                 all_data.extend(drain(master, 0.025))
                 os.write(master, b"C")
                 all_data.extend(drain(master, 0.3))
-                assert proc.poll() is None, "split arrow quit"
+                assert proc.poll() is None, ("split arrow quit", proc.poll(), round(time.monotonic() - split_start, 4), bytes(all_data[-500:]))
                 resize(slave, 40, 10)
                 proc.send_signal(signal.SIGWINCH)
                 narrow = drain(master, 0.3)
@@ -330,6 +363,7 @@ if len(sys.argv) > 2 and sys.argv[2] == "unknown-key":
 elif len(sys.argv)>2 and sys.argv[2]=="view":
     view_case();view_case(no_color=True)
 else:
+    termios_selfcheck()
     rejection_cases()
     run_case("rich/split sequences/scroll/resize/manual/no overlap/idle", rich=True)
     run_case("NO_COLOR", no_color=True)
