@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -56,10 +57,15 @@ func TestWatchGateAndRetention(t *testing.T) {
 	if s.snapshot != before || s.lastSuccess != wall.Add(120*time.Second) || s.errorText == "" {
 		t.Fatal("failed partial attempt replaced success")
 	}
-	if s.begin(now.Add(1329*time.Second), wall) || !s.begin(now.Add(1330*time.Second), wall) {
-		t.Fatal("900s failure gate boundary")
+	for i := 0; i < 100; i++ {
+		if s.begin(now.Add(489*time.Second), wall) {
+			t.Fatal("manual request bypassed 60s error gate")
+		}
 	}
-	s.finish(statusReport{Providers: []statusProvider{{Provider: "codex", Status: "unavailable"}}}, nil, now.Add(1340*time.Second), wall)
+	if !s.begin(now.Add(490*time.Second), wall) || s.begin(now.Add(491*time.Second), wall) {
+		t.Fatal("60s failure gate boundary or overlapping retry")
+	}
+	s.finish(statusReport{Providers: []statusProvider{{Provider: "codex", Status: "unavailable"}}}, nil, now.Add(500*time.Second), wall)
 	if s.errorText != "" || s.snapshot.report.Providers[0].Status != "unavailable" {
 		t.Fatal("nil-error uncertainty reclassified")
 	}
@@ -260,5 +266,119 @@ func TestWatchRendererLegacyBytes(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+	}
+}
+
+func TestWatchCollectorHonorsCooldownWhileOneShotRefreshForces(t *testing.T) {
+	for _, outcome := range []string{"usable", "rate_limit", "auth"} {
+		for _, jsonOutput := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/json=%t", outcome, jsonOutput), func(t *testing.T) {
+				dataHome, _, binDir, account := newFakeClaudeProfile(t)
+				store, err := newStore(dataHome)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("PATH", binDir+string(os.PathListSeparator)+"/usr/bin:/bin")
+				payload := fullClaudeUsagePayload(time.Now().Add(time.Hour), 10)
+				installFakeClaude(t, binDir, payload, false, 0, false)
+				if q, err := runClaudeProbe(t, store, account, claudeModelSonnet); err != nil || !q.Eligible {
+					t.Fatalf("prime=%+v err=%v", q, err)
+				}
+				if outcome != "usable" {
+					ageClaudeAttempt(t, store, account, 6*time.Minute)
+					raw := `{"status":429,"retry_after":600}`
+					if outcome == "auth" {
+						raw = `{"status":401}`
+					}
+					installClaudeFailure(t, binDir, raw)
+					if q, err := runClaudeProbe(t, store, account, claudeModelSonnet); err != nil || q.ProbeFailure != outcome {
+						t.Fatalf("failure=%+v err=%v", q, err)
+					}
+				}
+				ageClaudeAttempt(t, store, account, 11*time.Second)
+				installFakeClaude(t, binDir, payload, false, 0, false)
+				before := fakeClaudeCount(t, account, ".probe-count")
+				for range 3 {
+					report, err := collectStatusContext(context.Background(), store, []string{"claude"}, nil)
+					if err != nil || len(report.Accounts) != 1 {
+						t.Fatalf("watch=%+v err=%v", report, err)
+					}
+					if report.Accounts[0].Launchable != (outcome == "usable") {
+						t.Fatalf("watch bypassed denial: %+v", report.Accounts[0])
+					}
+				}
+				if count := fakeClaudeCount(t, account, ".probe-count"); count != before {
+					t.Fatalf("ordinary watch forced %d extra probes", count-before)
+				}
+				var out strings.Builder
+				if jsonOutput {
+					err = statusJSONRefresh(store, &out, true, "claude")
+				} else {
+					err = statusRefresh(store, &out, true, "claude")
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				report, err := collectStatusContext(context.Background(), store, []string{"claude"}, nil)
+				if err != nil || len(report.Accounts) != 1 || !report.Accounts[0].Launchable {
+					t.Fatalf("one-shot failed to recover: %+v err=%v", report, err)
+				}
+				if count := fakeClaudeCount(t, account, ".probe-count"); count != before+1 {
+					t.Fatalf("one-shot refresh probes=%d want=%d", count, before+1)
+				}
+			})
+		}
+	}
+}
+
+func TestWatchCollectorKeepsCodexAuthUntilKnownForcedRefresh(t *testing.T) {
+	store, err := newStore(tempDataHome(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := store.EnsureAccount("codex", "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binDir := t.TempDir()
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+"/usr/bin:/bin")
+	t.Setenv("HOME", t.TempDir())
+	installCodexProbeFixture(t, binDir, "auth")
+	if _, err := collectStatusContext(context.Background(), store, []string{"codex"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := store.accountRoot("codex", "fixture", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, _ := json.Marshal(codexProbeState{AttemptedAt: time.Now().Add(-11 * time.Second), AuthRequired: true})
+	err = replaceProbeCacheFile(dir, state, codexProbeStateName, ".codex-probe.tmp")
+	dir.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	installCodexProbeFixture(t, binDir, "success")
+	for range 3 {
+		report, err := collectStatusContext(context.Background(), store, []string{"codex"}, nil)
+		if err != nil || len(report.Accounts) != 1 || report.Accounts[0].Launchable || !strings.Contains(report.Accounts[0].Reason, "codator login codex fixture") {
+			t.Fatalf("watch cleared auth: %+v err=%v", report, err)
+		}
+	}
+	probes := func() int {
+		data, err := os.ReadFile(filepath.Join(account.NativeDir, ".fixture-probes"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Count(string(data), "\n")
+	}
+	if count := probes(); count != 1 {
+		t.Fatalf("watch retried auth: %d", count)
+	}
+	var out strings.Builder
+	if err := statusJSONRefresh(store, &out, true, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"launchable": true`) || probes() != 2 {
+		t.Fatalf("forced JSON did not recover: %s", out.String())
 	}
 }

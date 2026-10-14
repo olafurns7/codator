@@ -23,7 +23,7 @@ On Linux, Codex also needs `bubblewrap` for its sandbox: `sudo apt install bubbl
 ~~~sh
 (
 set -eu
-version=${CODATOR_VERSION:-v0.9.1}
+version=${CODATOR_VERSION:-v0.10.0}
 installer=$(mktemp)
 trap 'rm -f "$installer"' EXIT
 curl -fsSL -o "$installer" "https://github.com/olafurns7/codator/releases/download/$version/install.sh"
@@ -114,9 +114,9 @@ codator codex --account personal exec -- "explain this repository"
 
 Add `--json` to `codator status` for one versioned JSON document with UTC timestamps. The flag can appear before or after the optional provider.
 
-Use `codator status --watch [codex|claude]` to keep the same boxed tables open. It requires terminal input/output and a nonempty `TERM` other than `dumb`; `NO_COLOR` keeps bars and dots without color. `--watch` and `--json` cannot be combined.
+Use `codator status --watch [codex|claude]` to keep the same boxed tables open. It requires terminal input/output and a nonempty `TERM` other than `dumb`; `NO_COLOR` keeps bars and dots without color. `--watch` cannot be combined with `--json` or `--refresh`. Watch collections, including manual `r`, honor normal per-account cooldowns and auth denials; use one-shot `status --refresh` for an owner-forced probe.
 
-- `r` uses the shared refresh gate; repeated presses are discarded. The first usable view collects immediately, then waits at least 300 seconds after successful completion or 900 seconds after command-error cleanup. Scroll, resize and redraw do not probe.
+- `r` uses the shared refresh gate; repeated presses are discarded. The first usable view collects immediately, then waits at least 300 seconds after successful completion or 60 seconds after command-error cleanup. Scroll, resize and redraw do not probe.
 - Arrows and `h`/`l` scroll the intrinsic tables vertically/horizontally; PgUp/PgDn and Home/End reach all accounts, columns and notes. A terminal smaller than 20 columns by 8 rows defers new collections until resized.
 - `[`/`]` select an account; Enter opens/closes its full detail. At 132x18 or larger, table and detail share the body and Tab switches focus; smaller panes show detail in the full body. Selecting reveals the ACCOUNT column; manual scrolling stays available. Busy means profile-lock contention, not an active session.
 - `s` cycles label/headroom/nearest-reset ordering within providers; `p` cycles loaded-provider filters and `f` state filters. `/` edits a case-insensitive account-name substring (128 UTF-8 bytes): Enter applies, Ctrl-G cancels, Ctrl-U clears and Backspace removes a grapheme. In name entry q/r/h/l are text; Esc/Ctrl-C still quit. Filters intersect, affect only the view and never change the unfiltered next-account estimate or collect other providers. Sort order updates on snapshots/control changes, while freshness labels keep updating between them.

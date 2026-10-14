@@ -22,7 +22,7 @@ For launch, Codator consumes only a leading --account NAME pair. Every
 remaining argument, including --, is passed unchanged to the native CLI.
 Status accepts --json, --refresh or --watch before or after its provider.
 Watch cannot be combined with --json or --refresh.
-Watch: r refresh (300s success / 900s error gate); arrows/h/l and PgUp/PgDn
+Watch: r refresh (300s success / 60s error gate); arrows/h/l and PgUp/PgDn
 scroll; Home/End; q/Esc/Ctrl-C quit. Requires a terminal; honors NO_COLOR.
 The gate covers one running view; other invocations and restarts add probes.
 MCP login uses the current profile, --account NAME, or any shared profile.
