@@ -293,6 +293,8 @@ def view_case(no_color=False):
             tables=read(132,18)
             assert "ACCOUNT" in tables,("active feed returns tables",tables)
             os.write(master,b"g")
+            # Take the key's 132-col frame before shrinking; else it can land after the resize.
+            read(132,18)
             resize(slave,40,18);proc.send_signal(signal.SIGWINCH)
             graph_narrow=read(40,18)
             assert "Session sparklines" in graph_narrow and "…" in graph_narrow,("narrow graph ellipsis",graph_narrow)
