@@ -371,7 +371,7 @@ while IFS= read -r line; do
     *'"method":"account/read"'*) printf '%s\n' '{"id":2,"result":{"account":{"type":"chatgpt","email":null,"planType":"plus"},"requiresOpenaiAuth":true}}' ;;
     *'"method":"account/rateLimits/read"'*)
       if [ "__MODE__" = error ]; then
-        printf '%s\n' '{"id":3,"error":{"code":-1,"message":"fixture failure"}}'
+        printf '%s\n' '{"id":3,"error":{"code":-1,"message":"network error: synthetic outage"}}'
       else
         response='{"id":3,"result":{"ordinaryUsageAllowed":true,"rateLimits":{"limitId":"codex","primary":{"usedPercent":20,"windowDurationMins":300,"resetsAt":4102444800},"secondary":{"usedPercent":60,"windowDurationMins":10080,"resetsAt":4102444800},"spendControlReached":false},"rateLimitsByLimitId":{"codex":{"limitId":"codex","primary":{"usedPercent":20,"windowDurationMins":300,"resetsAt":4102444800},"secondary":{"usedPercent":60,"windowDurationMins":10080,"resetsAt":4102444800},"spendControlReached":false}}}}'
         if [ "__MODE__" = unknown ]; then

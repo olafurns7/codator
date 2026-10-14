@@ -147,7 +147,11 @@ func probeCodex(account Account) (quota, error) {
 func probeCodexWithContext(parent context.Context, account Account) (quota, error) {
 	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 	defer cancel()
-	return probeCodexContext(ctx, account)
+	q, err := probeCodexContext(ctx, account)
+	if err != nil && q.ProbeFailure == "" {
+		q = codexProbeFailure(account, q, err)
+	}
+	return q, err
 }
 
 func probeCodexContext(ctx context.Context, account Account) (quota, error) {
@@ -189,7 +193,7 @@ func probeCodexContext(ctx context.Context, account Account) (quota, error) {
 		return quota{}, errors.New("Codex app-server handshake failed")
 	}
 	if _, err := readRPC(scanner, 1); err != nil {
-		return quota{}, errors.New("Codex app-server handshake failed")
+		return codexProbeFailure(account, quota{}, err), err
 	}
 	if err := encoder.Encode(rpcRequest{Method: "initialized", Params: struct{}{}}); err != nil {
 		return quota{}, errors.New("Codex app-server handshake failed")
@@ -199,11 +203,19 @@ func probeCodexContext(ctx context.Context, account Account) (quota, error) {
 	}
 	accountResult, err := readRPC(scanner, 2)
 	if err != nil {
-		return quota{}, errors.New("Codex account check failed")
+		return codexProbeFailure(account, quota{}, err), err
 	}
 	var accountInfo codexAccountResponse
-	if json.Unmarshal(accountResult, &accountInfo) != nil || accountInfo.Account == nil {
-		return quota{Reason: "subscription account is unknown"}, errors.New("Codex account is not a verified subscription")
+	if json.Unmarshal(accountResult, &accountInfo) != nil {
+		return codexProbeFailure(account, quota{}, &probeFailure{Kind: "malformed"}), nil
+	}
+	if accountInfo.Account == nil {
+		var fields map[string]json.RawMessage
+		_ = json.Unmarshal(accountResult, &fields)
+		if _, present := fields["account"]; !present {
+			return codexProbeFailure(account, quota{}, &probeFailure{Kind: "malformed"}), nil
+		}
+		return codexProbeFailure(account, quota{}, &probeFailure{Kind: "auth"}), nil
 	}
 	email := accountInfo.Account.Email
 	if accountInfo.Account.Type != "chatgpt" {
@@ -214,18 +226,15 @@ func probeCodexContext(ctx context.Context, account Account) (quota, error) {
 	}
 	verified := quota{Subscription: true, Email: email}
 	if err := sendRPC(encoder, "account/rateLimits/read", 3, nil); err != nil {
-		verified.Reason = "Codex usage check failed"
-		return verified, nil
+		return codexProbeFailure(account, verified, err), nil
 	}
 	result, err := readRPC(scanner, 3)
 	if err != nil {
-		verified.Reason = "Codex usage check failed"
-		return verified, nil
+		return codexProbeFailure(account, verified, err), nil
 	}
 	var usage codexUsageResponse
 	if json.Unmarshal(result, &usage) != nil {
-		verified.Reason = "usage response is malformed"
-		return verified, nil
+		return codexProbeFailure(account, verified, &probeFailure{Kind: "malformed"}), nil
 	}
 	q := verified
 	switch {
@@ -333,7 +342,7 @@ func readRPC(scanner *bufio.Scanner, expectedID int) (json.RawMessage, error) {
 	for scanner.Scan() {
 		var response rpcResponse
 		if json.Unmarshal(scanner.Bytes(), &response) != nil {
-			return nil, errors.New("invalid JSON-RPC response")
+			return nil, &probeFailure{Kind: "malformed"}
 		}
 		id := strings.TrimSpace(string(response.ID))
 		if id == "" || id == "null" {
@@ -343,10 +352,10 @@ func readRPC(scanner *bufio.Scanner, expectedID int) (json.RawMessage, error) {
 			continue
 		}
 		if len(response.Error) != 0 && string(response.Error) != "null" {
-			return nil, errors.New("JSON-RPC request failed")
+			return nil, nativeProbeFailure(response.Error)
 		}
 		if len(response.Result) == 0 || string(response.Result) == "null" {
-			return nil, errors.New("empty JSON-RPC result")
+			return nil, &probeFailure{Kind: "malformed"}
 		}
 		return response.Result, nil
 	}
@@ -493,4 +502,14 @@ func codexWindowPercentages(snapshot *codexRateLimitSnapshot) ([]float64, bool) 
 		used = append(used, percent)
 	}
 	return used, valid && len(used) > 0
+}
+
+func codexProbeFailure(account Account, q quota, err error) quota {
+	failure := probeFailureOf(err)
+	q.ProbeFailure = failure.Kind
+	q.Reason = probeFailureReason(account, failure.Kind)
+	if failure.Kind == "auth" {
+		q.Subscription = false
+	}
+	return q
 }

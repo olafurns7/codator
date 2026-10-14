@@ -12,14 +12,16 @@ const usage = `Usage:
   codator mcp login SERVER [--account NAME] [--timeout 30m] [--scopes SCOPE,...]
   codator mcp share
   codator doctor [codex|claude]
-  codator status [--json | --watch] [codex|claude]
+  codator status [--json] [--refresh] [codex|claude]
+  codator status --watch [codex|claude]
   codator codex [--account NAME] [native arguments]
   codator claude [--account NAME] [native arguments]
   codator --help
 
 For launch, Codator consumes only a leading --account NAME pair. Every
 remaining argument, including --, is passed unchanged to the native CLI.
-Status accepts --json or --watch before or after its optional provider.
+Status accepts --json, --refresh or --watch before or after its provider.
+Watch cannot be combined with --json or --refresh.
 Watch: r refresh (300s success / 900s error gate); arrows/h/l and PgUp/PgDn
 scroll; Home/End; q/Esc/Ctrl-C quit. Requires a terminal; honors NO_COLOR.
 The gate covers one running view; other invocations and restarts add probes.
@@ -44,6 +46,7 @@ type invocation struct {
 	args       []string
 	jsonOutput bool
 	watch      bool
+	refresh    bool
 	mcp        *mcpLoginOptions
 }
 
@@ -73,14 +76,16 @@ func parseInvocation(args []string) (invocation, error) {
 				inv.jsonOutput = true
 			case arg == "--watch" && !inv.watch:
 				inv.watch = true
+			case arg == "--refresh" && !inv.refresh:
+				inv.refresh = true
 			case validProvider(arg) && inv.provider == "":
 				inv.provider = arg
 			default:
-				return invocation{}, fmt.Errorf("%w: status accepts only --json or --watch, codex or claude", errUsage)
+				return invocation{}, fmt.Errorf("%w: status accepts only --json, --refresh or --watch, codex or claude", errUsage)
 			}
 		}
-		if inv.watch && inv.jsonOutput {
-			return invocation{}, fmt.Errorf("%w: --watch and --json cannot be combined", errUsage)
+		if inv.watch && (inv.jsonOutput || inv.refresh) {
+			return invocation{}, fmt.Errorf("%w: --watch cannot be combined with --json or --refresh", errUsage)
 		}
 		return inv, nil
 	case "doctor":

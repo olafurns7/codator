@@ -49,6 +49,7 @@ Everything after `--` goes to the native login command unchanged.
 codator codex                       # picks the Codex account with the most quota left
 codator claude --account personal   # or choose a label yourself
 codator status                      # show every account's remaining quota
+codator status --refresh claude     # retry Claude usage despite its normal cooldown
 ~~~
 
 That's all you need. `codator codex` and `codator claude` keep the native CLI's normal sandbox and approval prompts. The rest of this page covers optional shortcuts (which turn all of those off), MCP servers, and reference details.
@@ -96,7 +97,8 @@ export CODATOR_SHIMS=1
 codator login codex|claude NAME [-- native-login-options]
 codator codex  [--account NAME] [native arguments]
 codator claude [--account NAME] [native arguments]
-codator status [--json | --watch] [codex|claude]
+codator status [--json] [--refresh] [codex|claude]
+codator status --watch [codex|claude]
 codator doctor [codex|claude]
 codator mcp login SERVER [--account NAME] [--timeout 30m] [--scopes a,b]
 codator mcp share
@@ -146,12 +148,14 @@ Claude Code records when a login ends, and a new `codator login claude NAME` is 
 A dim line under an account explains anything a cell cannot, such as why it is skipped:
 
 - **busy:** another Codator command, such as a login, holds that profile's lock.
-- **unknown:** Codator could not read reliable usage data. Automatic selection skips it. An explicit `--account` still launches if the subscription is verified.
+- **unknown:** Codator could not read reliable usage data. Automatic selection skips it. An explicit `--account` can still launch a previously verified subscription during a transport failure or probe cooldown, with unknown quota. Known login failures and exhausted quota remain blocked.
 - **cooldown (Claude):** Codator is waiting before it retries a usage probe that failed.
 
 Codator counts Claude's session and weekly limits separately from its model-specific weekly limits. It checks a recognized `--model`, or for a plain launch, each account's `ANTHROPIC_MODEL`, saved `settings.json` model, or `ANTHROPIC_DEFAULT_MODEL` in that order. With no model override, it uses a bounded local `claude --version` check to recognize the Opus default in Claude Code 2.1.280 and later 2.1.x releases. An exhausted Fable limit therefore does not block a known Opus launch. Older or unrecognized versions, unfamiliar models, conflicting settings, and ambiguous native arguments keep the conservative all-model check. Codator forwards native arguments unchanged and never sets or enforces spending caps.
 
-Claude usage is cached on disk per account for 5 minutes after success and 15 minutes after failed or unknown probes; account locks and probe reservations prevent duplicate concurrent probes.
+Claude usage is cached on disk per account for 5 minutes after success. Network errors, timeouts, malformed or unknown answers, and interrupted probe reservations retry after 60 seconds. Only a provider rate-limit error (429 or equivalent) uses the 15-minute fallback; a supplied Retry-After sets the retry deadline instead. Login failures remain blocked until you run the exact `codator login claude NAME` command shown in status and launch errors, or a forced refresh verifies recovery. Codex shows `codator login codex NAME` for the same auth failures and remembers them without adding a usage cache.
+
+Use `codator status --refresh [codex|claude]` (also with `--json`) to bypass Claude's normal cooldown or retry a remembered login failure. Forced retries have a 10-second minimum interval; profile locks and durable reservations prevent concurrent Claude probes. Codex usage probes already run live, so it needs that interval only when refreshing a remembered auth failure. Automatic selection continues to skip unknown usage. During a network outage, `codator claude --account NAME` can launch with unknown quota if that subscription was previously verified and has no known login or quota denial. Legacy failed Claude caches have their retry window shortened to 60 seconds without treating their ambiguous failures as evidence of a valid login. See [the provider contract](docs/provider-contract.md) for the failure and cache rules.
 
 ## Shared configuration
 

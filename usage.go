@@ -7,6 +7,7 @@ import (
 )
 
 type quota struct {
+	ProbeFailure string
 	Headroom     float64
 	Eligible     bool
 	Known        bool
@@ -28,7 +29,7 @@ type usageWindow struct {
 // Subscription is verified identity; Known and Eligible describe quota only.
 // Explicit selection can proceed with unknown quota after identity is verified.
 func canLaunchExplicit(q quota) bool {
-	return q.Subscription && (!q.Known || q.Eligible)
+	return q.ProbeFailure != "auth" && q.ProbeFailure != "malformed" && q.Subscription && (!q.Known || q.Eligible)
 }
 
 type candidate struct {

@@ -131,19 +131,20 @@ func decodeClaudeControlFrame(frame []byte, id string) (json.RawMessage, bool, e
 			Subtype   string          "json:\"subtype\""
 			RequestID string          "json:\"request_id\""
 			Response  json.RawMessage "json:\"response\""
+			Error     json.RawMessage `json:"error"`
 		} "json:\"response\""
 	}
 	if err := json.Unmarshal(frame, &response); err != nil {
-		return nil, false, errors.New("Claude control response is malformed")
+		return nil, false, &probeFailure{Kind: "malformed"}
 	}
 	if response.Type != "control_response" || response.Response.RequestID != id {
 		return nil, false, nil
 	}
 	if response.Response.Subtype == "error" {
-		return nil, true, errors.New("Claude rejected a control request")
+		return nil, true, nativeProbeFailure(response.Response.Error)
 	}
 	if response.Response.Subtype != "success" {
-		return nil, true, errors.New("Claude control response is malformed")
+		return nil, true, &probeFailure{Kind: "malformed"}
 	}
 	return response.Response.Response, true, nil
 }

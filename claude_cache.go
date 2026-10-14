@@ -18,7 +18,7 @@ import (
 const (
 	claudeCacheName       = ".claude-usage.json"
 	claudeCacheTemp       = ".claude-usage.tmp"
-	claudeCacheVersion    = 2
+	claudeCacheVersion    = 3
 	claudeCacheMaxBytes   = 64 << 10
 	claudeCacheMaxWindows = 128
 	claudeCacheMaxDenials = 6
@@ -54,7 +54,16 @@ type claudeCachedDenial struct {
 	ObservedAt  time.Time `json:"observed_at"`
 }
 
-func (s *Store) probeClaudeAccount(ctx context.Context, account Account, model claudeModelFamily) (quota, error) {
+func (s *Store) probeClaudeAccount(ctx context.Context, account Account, model claudeModelFamily, refresh ...bool) (q quota, probeErr error) {
+	defer func() {
+		if q.ProbeFailure != "" {
+			reason := probeFailureReason(account, q.ProbeFailure)
+			if q.Reason != "" {
+				reason += "; " + q.Reason
+			}
+			q.Reason = reason
+		}
+	}()
 	attemptedAt := time.Now().UTC()
 	state, found, err := s.readClaudeProbeCache(account, attemptedAt)
 	if errors.Is(err, errClaudeCacheCorrupt) {
@@ -69,7 +78,8 @@ func (s *Store) probeClaudeAccount(ctx context.Context, account Account, model c
 	}
 	if found {
 		now := time.Now().UTC()
-		if now.Before(state.NextProbeAt) {
+		force := len(refresh) > 0 && refresh[0]
+		if (!force && (state.Outcome == "auth" || now.Before(state.NextProbeAt))) || force && now.Before(state.AttemptedAt.Add(probeRefreshInterval)) {
 			return claudeCachedQuota(state, now, model), nil
 		}
 	}
@@ -79,8 +89,10 @@ func (s *Store) probeClaudeAccount(ctx context.Context, account Account, model c
 		reservation = newClaudeReservation(attemptedAt)
 	} else {
 		reservation.AttemptedAt = attemptedAt
-		reservation.NextProbeAt = attemptedAt.Add(claudeFailureCooldown)
-		reservation.Outcome = "reserved"
+		reservation.NextProbeAt = attemptedAt.Add(probeRetryInterval)
+		if reservation.Outcome != "auth" {
+			reservation.Outcome = "reserved"
+		}
 		reservation.AllowanceModels = 0
 		reservation.Denials = freshClaudeDenials(reservation.Denials, attemptedAt)
 	}
@@ -93,10 +105,14 @@ func (s *Store) probeClaudeAccount(ctx context.Context, account Account, model c
 		if ctx.Err() != nil {
 			return quota{}, ctx.Err()
 		}
-		return claudeCachedQuota(reservation, time.Now().UTC(), model), nil
+		return s.recordClaudeProbeFailure(account, reservation, model, probeFailureOf(err))
 	}
 
 	completedAt := time.Now().UTC()
+	if top, topErr := rawJSONObject(payload); topErr == nil && len(top["error"]) != 0 && string(top["error"]) != "null" {
+		return s.recordClaudeProbeFailure(account, reservation, model, probeFailureOf(nativeProbeFailure(payload)))
+	}
+
 	snapshot, subscription, models, usable, denials, err := sanitizeClaudeQuotaPayload(payload, completedAt)
 	if err != nil {
 		currentDenials := claudeUncacheableDenials(payload, completedAt)
@@ -104,9 +120,12 @@ func (s *Store) probeClaudeAccount(ctx context.Context, account Account, model c
 		if len(currentDenials) != 0 {
 			_ = s.writeClaudeProbeCache(account, reservation)
 		}
+		if reservation.Outcome == "auth" {
+			return s.recordClaudeProbeFailure(account, reservation, model, &probeFailure{Kind: "malformed"})
+		}
 		result, parseErr := parseClaudeQuotaForModel(payload, completedAt, model)
 		if parseErr != nil {
-			result = quota{Reason: "Claude usage response is unknown"}
+			return s.recordClaudeProbeFailure(account, reservation, model, &probeFailure{Kind: "malformed"})
 		}
 		if !result.Known || result.Eligible {
 			result.Known, result.Eligible, result.Headroom = false, false, 0
@@ -118,6 +137,9 @@ func (s *Store) probeClaudeAccount(ctx context.Context, account Account, model c
 		return result, nil
 	}
 
+	if reservation.Outcome == "auth" && !usable {
+		return s.recordClaudeProbeFailure(account, reservation, model, &probeFailure{Kind: "malformed"})
+	}
 	completed := reservation
 	completed.ObservedAt = completedAt
 	completed.Subscription = subscription
@@ -133,7 +155,7 @@ func (s *Store) probeClaudeAccount(ctx context.Context, account Account, model c
 		completed.NextProbeAt = attemptedAt.Add(claudeSuccessCooldown)
 	} else {
 		completed.Outcome = "unknown"
-		completed.NextProbeAt = attemptedAt.Add(claudeFailureCooldown)
+		completed.NextProbeAt = attemptedAt.Add(probeRetryInterval)
 	}
 	if completed.Subscription {
 		completed.SubscriptionUntil = completed.NextProbeAt
@@ -158,11 +180,30 @@ func (s *Store) probeClaudeAccount(ctx context.Context, account Account, model c
 	return result, nil
 }
 
+func (s *Store) recordClaudeProbeFailure(account Account, reservation claudeProbeCache, model claudeModelFamily, failure *probeFailure) (quota, error) {
+	failed := reservation
+	failed.Outcome = failure.Kind
+	if reservation.Outcome == "auth" || failure.Kind == "auth" {
+		failed.Outcome = "auth"
+	} else if failure.Kind == "rate_limit" {
+		failed.NextProbeAt = reservation.AttemptedAt.Add(claudeFailureCooldown)
+		if failure.RetryAt.After(reservation.AttemptedAt) {
+			failed.NextProbeAt = failure.RetryAt
+		}
+	}
+	if err := s.writeClaudeProbeCache(account, failed); err != nil {
+		result := claudeCachedQuota(reservation, time.Now().UTC(), model)
+		result.ProbeFailure = failure.Kind
+		return result, errors.New("cannot persist Claude probe failure")
+	}
+	return claudeCachedQuota(failed, time.Now().UTC(), model), nil
+}
+
 func newClaudeReservation(now time.Time) claudeProbeCache {
 	return claudeProbeCache{
 		Version:     claudeCacheVersion,
 		AttemptedAt: now,
-		NextProbeAt: now.Add(claudeFailureCooldown),
+		NextProbeAt: now.Add(probeRetryInterval),
 		Outcome:     "reserved",
 	}
 }
@@ -180,8 +221,26 @@ func claudeRetryHint(reason string) string {
 
 func claudeCachedQuota(state claudeProbeCache, now time.Time, model claudeModelFamily) quota {
 	subscription := state.Subscription && now.Before(state.SubscriptionUntil)
+	switch state.Outcome {
+	case "auth":
+		return quota{ProbeFailure: "auth"}
+	case "transport", "rate_limit", "malformed":
+		subscription = state.Subscription
+		q := quota{Subscription: subscription, ProbeFailure: state.Outcome}
+		if previous, err := parseClaudeQuotaForModel(state.Snapshot, now, model); err == nil && previous.Known && !previous.Eligible {
+			q.Known, q.Reason = true, previous.Reason
+		}
+		q = applyClaudeDenials(q, state.Denials, now, model, subscription, state.NextProbeAt)
+		q.Reason = withClaudeRetry(q.Reason, state.NextProbeAt)
+		return q
+	case "reserved":
+		subscription = false
+	}
 	if q := applyClaudeDenials(quota{}, state.Denials, now, model, subscription, state.NextProbeAt); q.Known {
 		return q
+	}
+	if state.Outcome == "reserved" {
+		return quota{Reason: claudeRetryReason(state.NextProbeAt)}
 	}
 	if len(state.Snapshot) != 0 {
 		q, err := parseClaudeQuotaForModel(state.Snapshot, now, model)
@@ -294,11 +353,14 @@ func (s *Store) invalidateClaudeCacheOnLogin(account Account) error {
 	now := time.Now().UTC()
 	state, found, err := s.readClaudeProbeCache(account, now)
 	if errors.Is(err, errClaudeCacheCorrupt) {
-		return s.writeClaudeProbeCache(account, newClaudeReservation(now))
+		return s.writeClaudeProbeCache(account, newClaudeReservation(now.Add(-probeRetryInterval)))
 	}
 	if err != nil || !found {
 		return err
 	}
+	state.AttemptedAt = now.Add(-probeRetryInterval)
+	state.NextProbeAt = now
+	state.Outcome = "reserved"
 	state.ObservedAt = time.Time{}
 	state.Subscription = false
 	state.SubscriptionUntil = time.Time{}
@@ -351,18 +413,43 @@ func (s *Store) readClaudeProbeCache(account Account, now time.Time) (claudeProb
 	if err := validateClaudeProbeCache(state, now); err != nil {
 		return claudeProbeCache{}, true, errClaudeCacheCorrupt
 	}
+	if state.Version == 2 {
+		state.Version = claudeCacheVersion
+		if state.Outcome == "reserved" || state.Outcome == "unknown" {
+			state.NextProbeAt = state.AttemptedAt.Add(probeRetryInterval)
+			// Old failures did not distinguish expired login from network failure.
+			state.Outcome = "reserved"
+			state.Subscription = false
+			state.SubscriptionUntil = time.Time{}
+			state.Snapshot = nil
+			state.ObservedAt = time.Time{}
+			state.AllowanceModels = 0
+		}
+	}
 	return state, true, nil
 }
 
 func validateClaudeProbeCache(state claudeProbeCache, now time.Time) error {
-	if state.Version != claudeCacheVersion || state.AttemptedAt.IsZero() || state.AttemptedAt.After(now.Add(2*time.Minute)) {
+	if (state.Version != claudeCacheVersion && state.Version != 2) || state.AttemptedAt.IsZero() || state.AttemptedAt.After(now.Add(2*time.Minute)) {
 		return errClaudeCacheCorrupt
 	}
-	interval := claudeFailureCooldown
+	interval := probeRetryInterval
+	if state.Version == 2 {
+		interval = claudeFailureCooldown
+	}
 	switch state.Outcome {
 	case "usable":
 		interval = claudeSuccessCooldown
 	case "unknown", "reserved":
+	case "auth", "transport", "malformed":
+		if state.Version == 2 {
+			return errClaudeCacheCorrupt
+		}
+	case "rate_limit":
+		if state.Version == 2 || !state.NextProbeAt.After(state.AttemptedAt) || state.NextProbeAt.After(now.Add(366*24*time.Hour)) {
+			return errClaudeCacheCorrupt
+		}
+		interval = state.NextProbeAt.Sub(state.AttemptedAt)
 	default:
 		return errClaudeCacheCorrupt
 	}
@@ -370,7 +457,7 @@ func validateClaudeProbeCache(state claudeProbeCache, now time.Time) error {
 		return errClaudeCacheCorrupt
 	}
 	if len(state.Snapshot) == 0 {
-		if !state.ObservedAt.IsZero() || state.Subscription || !state.SubscriptionUntil.IsZero() || state.AllowanceModels != 0 || len(state.Denials) != 0 && state.Outcome != "reserved" {
+		if !state.ObservedAt.IsZero() || state.Subscription || !state.SubscriptionUntil.IsZero() || state.AllowanceModels != 0 || len(state.Denials) != 0 && (state.Outcome == "usable" || state.Outcome == "unknown") {
 			return errClaudeCacheCorrupt
 		}
 	} else {
@@ -378,7 +465,10 @@ func validateClaudeProbeCache(state claudeProbeCache, now time.Time) error {
 			return errClaudeCacheCorrupt
 		}
 		if state.Subscription {
-			if state.SubscriptionUntil.IsZero() || state.SubscriptionUntil.After(state.NextProbeAt) || state.Outcome != "reserved" && !state.SubscriptionUntil.Equal(state.NextProbeAt) {
+			if state.Version == 2 && state.SubscriptionUntil.After(state.NextProbeAt) {
+				return errClaudeCacheCorrupt
+			}
+			if state.SubscriptionUntil.IsZero() || (state.Outcome == "usable" || state.Outcome == "unknown") && !state.SubscriptionUntil.Equal(state.NextProbeAt) {
 				return errClaudeCacheCorrupt
 			}
 		} else if !state.SubscriptionUntil.IsZero() {
@@ -425,34 +515,38 @@ func (s *Store) writeClaudeProbeCache(account Account, state claudeProbeCache) e
 }
 
 func replaceClaudeCacheFile(dir *os.Root, data []byte) error {
+	return replaceProbeCacheFile(dir, data, claudeCacheName, claudeCacheTemp)
+}
+
+func replaceProbeCacheFile(dir *os.Root, data []byte, cacheName, cacheTemp string) error {
 	if len(data) > claudeCacheMaxBytes {
 		return errors.New("Claude usage cache state is too large")
 	}
-	if info, err := dir.Lstat(claudeCacheName); err == nil {
+	if info, err := dir.Lstat(cacheName); err == nil {
 		if err := checkPrivateFile(info, 0600); err != nil {
 			return fmt.Errorf("unsafe Claude cache file: %w", err)
 		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	if info, err := dir.Lstat(claudeCacheTemp); err == nil {
+	if info, err := dir.Lstat(cacheTemp); err == nil {
 		if err := checkPrivateFile(info, 0600); err != nil {
 			return fmt.Errorf("unsafe Claude cache temporary file: %w", err)
 		}
-		if err := dir.Remove(claudeCacheTemp); err != nil {
+		if err := dir.Remove(cacheTemp); err != nil {
 			return err
 		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	file, err := dir.OpenFile(claudeCacheTemp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	file, err := dir.OpenFile(cacheTemp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return err
 	}
 	created := true
 	defer func() {
 		if created {
-			_ = dir.Remove(claudeCacheTemp)
+			_ = dir.Remove(cacheTemp)
 		}
 	}()
 	if err := file.Chmod(0600); err != nil {
@@ -472,14 +566,14 @@ func replaceClaudeCacheFile(dir *os.Root, data []byte) error {
 	if writeErr != nil {
 		return writeErr
 	}
-	if info, err := dir.Lstat(claudeCacheName); err == nil {
+	if info, err := dir.Lstat(cacheName); err == nil {
 		if err := checkPrivateFile(info, 0600); err != nil {
 			return fmt.Errorf("unsafe Claude cache file: %w", err)
 		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	if err := dir.Rename(claudeCacheTemp, claudeCacheName); err != nil {
+	if err := dir.Rename(cacheTemp, cacheName); err != nil {
 		return err
 	}
 	created = false

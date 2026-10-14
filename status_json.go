@@ -67,7 +67,11 @@ type statusDetails struct {
 }
 
 func statusJSON(store *Store, out io.Writer, providers ...string) error {
-	report, statusErr := collectStatus(store, providers, nil)
+	return statusJSONRefresh(store, out, false, providers...)
+}
+
+func statusJSONRefresh(store *Store, out io.Writer, refresh bool, providers ...string) error {
+	report, statusErr := collectStatusRefresh(store, providers, refresh, nil)
 	if err := renderStatusJSON(out, report); err != nil {
 		return err
 	}
