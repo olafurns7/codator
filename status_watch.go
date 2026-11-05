@@ -157,15 +157,17 @@ func (s *watchState) nextAccount(provider string, now, wall time.Time) string {
 			return "unknown / stale"
 		}
 	}
-	var best *statusAccount
+	var candidates []candidate
 	for i := range r.Accounts {
 		a := &r.Accounts[i]
-		if a.Provider != provider || a.State != "available" || !a.Launchable || watchAccountStale(*a, r, wall) || !watchPercent(a.HeadroomPercent) || len(a.KnownExhausted) != 0 {
+		if a.Provider != provider || a.State != "available" || !a.Launchable || watchAccountStale(*a, r, wall) || !watchPercent(a.HeadroomPercent) || len(a.KnownExhausted) != 0 && a.claudeHeadroom == nil {
 			continue
 		}
 		h := *a.HeadroomPercent
 		valid := true
-		if a.OnCredits {
+		if provider == "claude" && a.claudeHeadroom != nil {
+			valid = h > 0
+		} else if a.OnCredits {
 			valid = provider == "codex" && h == 0
 		} else {
 			valid = h > 0
@@ -175,14 +177,15 @@ func (s *watchState) nextAccount(provider string, now, wall time.Time) string {
 				valid = valid && !w.Exhausted && (absent || w.Unavailable == "" && watchPercent(w.UsedPercent) && watchPercent(w.RemainingPercent) && *w.RemainingPercent >= h)
 			}
 		}
-		if valid && (best == nil || h > *best.HeadroomPercent || h == *best.HeadroomPercent && a.Account < best.Account) {
-			best = a
+		if valid {
+			candidates = append(candidates, candidate{Account: Account{Name: a.Account}, Quota: quota{Eligible: true, Headroom: h, ClaudeHeadroom: a.claudeHeadroom}})
 		}
 	}
-	if best == nil {
+	best, found := bestCandidate(candidates)
+	if !found {
 		return "none known"
 	}
-	return watchClean(best.Account)
+	return watchClean(best.Account.Name)
 }
 
 func watchClean(s string) string {

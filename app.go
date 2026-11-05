@@ -195,6 +195,13 @@ func collectStatusRefresh(store *Store, providers []string, refresh bool, emit f
 
 func collectStatusContext(ctx context.Context, store *Store, providers []string, emit func(statusProvider, *statusAccount), refresh ...bool) (statusReport, error) {
 	force := len(refresh) > 0 && refresh[0]
+	defaultModel := sync.OnceValue(func() claudeModelFamily {
+		path, err := findNative("claude")
+		if err != nil {
+			return ""
+		}
+		return claudeRuntimeDefault(ctx, path)
+	})
 	report := statusReport{
 		SchemaVersion: 1,
 		GeneratedAt:   statusUTCSecond(time.Now()),
@@ -263,7 +270,8 @@ func collectStatusContext(ctx context.Context, store *Store, providers []string,
 				}
 				continue
 			}
-			q, err := probeAccount(ctx, store, provider, account, "", force)
+			model := launchClaudeModel(provider, nil, account, defaultModel)
+			q, err := probeAccount(ctx, store, provider, account, model, force)
 			if provider == "claude" {
 				q.Email = store.claudeEmail(account)
 			}
@@ -278,6 +286,7 @@ func collectStatusContext(ctx context.Context, store *Store, providers []string,
 					KnownExhausted: claudeData.KnownExhausted,
 					ObservedAt:     statusTime(state.ObservedAt),
 					NextProbeAt:    statusFutureTime(state.NextProbeAt, now),
+					ClaudeModel:    model,
 				}
 			}
 			lock.Close()
