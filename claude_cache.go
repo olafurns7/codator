@@ -297,9 +297,7 @@ func applyClaudeDenials(q quota, denials []claudeCachedDenial, now time.Time, mo
 		if age < 0 || !denial.ResetsAt.After(now) {
 			continue
 		}
-		family, known := claudeModelBucket(denial.DisplayName)
-		knownModel := model == claudeModelOpus || model == claudeModelSonnet || model == claudeModelHaiku || model == claudeModelFable
-		if denial.DisplayName != "" && knownModel && known && family != model {
+		if !claudeModelScopeApplies(denial.DisplayName, model) {
 			continue
 		}
 		q.Subscription = subscription

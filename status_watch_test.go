@@ -183,18 +183,27 @@ func TestWatchNextUsesDefaultModelWeeklyHeadroom(t *testing.T) {
 	for _, test := range []struct {
 		name            string
 		session, weekly int
+		retainedDenial  bool
 	}{
-		{"a", 97, 13},
-		{"b", 11, 85},
-		{"empty-session", 100, 0},
+		{"a", 97, 13, true},
+		{"b", 11, 85, false},
+		{"empty-session", 100, 0, false},
 	} {
 		payload := json.RawMessage(strings.Replace(string(runtimeDefaultQuotaPayload(test.weekly, 0)), `"utilization":10`, fmt.Sprintf(`"utilization":%d`, test.session), 1))
 		q, err := parseClaudeQuotaForModel(payload, wall, claudeModelOpus)
 		if err != nil {
 			t.Fatal(err)
 		}
-		data := claudeStatusDetails(claudeProbeCache{Outcome: "usable", ObservedAt: wall, Subscription: true, Snapshot: payload}, true, nil, wall)
-		report.Accounts = append(report.Accounts, quotaStatusAccount("claude", test.name, q, nil, wall, statusDetails{Windows: data.Windows, ObservedAt: &wall}))
+		state := claudeProbeCache{Outcome: "usable", ObservedAt: wall, Subscription: true, Snapshot: payload}
+		if test.retainedDenial {
+			state.Denials = []claudeCachedDenial{{DisplayName: "Haiku", ResetsAt: wall.Add(time.Hour), ObservedAt: wall}}
+		}
+		q = applyClaudeDenials(q, state.Denials, wall, claudeModelOpus, true, wall.Add(time.Minute))
+		data := claudeStatusDetails(state, true, nil, wall)
+		if test.retainedDenial && len(data.KnownExhausted) != 1 {
+			t.Fatal("retained denial missing from watch fixture")
+		}
+		report.Accounts = append(report.Accounts, quotaStatusAccount("claude", test.name, q, nil, wall, statusDetails{Windows: data.Windows, KnownExhausted: data.KnownExhausted, ObservedAt: &wall}))
 	}
 	s := watchState{}
 	s.finish(report, nil, now, wall)

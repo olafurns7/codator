@@ -2,6 +2,8 @@
 
 Codator lets you keep several [Codex](https://learn.chatgpt.com/docs/codex/cli) and [Claude Code](https://code.claude.com/docs/en/setup) subscription accounts side by side and start whichever one has the most quota left. Each account gets a local label (such as `personal` or `work`). Before a launch, Codator reads the native CLI's usage data and picks the eligible label with the most headroom. You can also choose one yourself.
 
+Claude checks quota for the launch model and ranks eligible accounts by weekly all-model headroom, then model weekly headroom, then session headroom. Status evaluates the default model while showing all reported model windows; `available_at` includes only limits that apply to that model. Codex keeps its minimum-headroom ranking.
+
 It runs on Linux and macOS (amd64 and arm64). Codator is not affiliated with OpenAI or Anthropic and does not provide or alter account access.
 
 ## Quick start

@@ -6,7 +6,7 @@ Codator remains the account-selection CLI for agents and Herdr launchers. Native
 
 | Observation | Claude retry policy | Launch behavior |
 | --- | --- | --- |
-| Complete usable response, including a known exhausted window | Cache for 5 minutes | Automatic ranking uses current eligible headroom; explicit selection cannot bypass exhaustion |
+| Complete usable response, including a known exhausted window | Cache for 5 minutes | Claude ranks eligible accounts by weekly all-model headroom, then model weekly headroom, then session headroom; explicit selection cannot bypass applicable exhaustion |
 | Transport, DNS, connection failure, or timeout | Retry after 60 seconds | Automatic selection skips it; explicit selection may use a previously verified subscription with unknown quota |
 | Authentication rejection (401/403, native auth code, or recognized login error) | Remember until login or explicit refresh | Both selection paths refuse it and show `codator login claude NAME` or `codator login codex NAME` |
 | Provider rate-limit rejection (429 or equivalent) | Retry-After, or 15 minutes when absent/invalid | Unknown quota can launch explicitly only with prior subscription verification and no retained denial |
@@ -17,6 +17,8 @@ Codator remains the account-selection CLI for agents and Herdr launchers. Native
 The 60-second transient retry lets an outage recover promptly while limiting repeated native processes and requests. Five-minute successful caching is unchanged. Native probes retain their existing 20-second timeout. Native error bodies are classified in memory. Exact status/code/type fields in the native error and its error/data envelopes take precedence; unrelated nested metadata is ignored. Text fallbacks accept recognized native HTTP-error prefixes or complete auth messages, never incidental numbers or embedded denial phrases. Retry-After is read only from the error envelope or its headers. Only fixed cause/fix text, failure class, and safe retry time are returned or stored; raw error messages and provider bodies are never included in diagnostics or caches.
 
 `Retry-After` accepts nonnegative seconds or an HTTP date. Values beyond one year and past HTTP dates are ignored before storing a deadline; an unusable value retains the 15-minute fallback. Cache validation also refuses rate-limit deadlines beyond 366 days. Quota reset times remain separate from probe retry deadlines.
+
+Claude status evaluates the default launch model: `available_at` uses only applicable exhausted windows and retained denials, while every reported model window remains visible. Reset times do not weight ranking. Codex retains its minimum-headroom ranking.
 
 ## Explicit launch and denials
 

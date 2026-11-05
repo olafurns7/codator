@@ -288,12 +288,13 @@ const (
 )
 
 func claudeModelFamilyForName(name string) (claudeModelFamily, bool) {
+	name = strings.TrimSuffix(name, "[1m]")
 	switch name {
-	case "opus", "opus[1m]", "claude-opus-5", "claude-opus-5-5":
+	case "opus", "claude-opus-5", "claude-opus-5-5":
 		return claudeModelOpus, true
-	case "sonnet", "sonnet[1m]", "claude-sonnet-5":
+	case "sonnet", "claude-sonnet-5", "claude-sonnet-5-5":
 		return claudeModelSonnet, true
-	case "haiku":
+	case "haiku", "claude-haiku-5-5":
 		return claudeModelHaiku, true
 	case "fable", "claude-fable-5-1":
 		return claudeModelFable, true
@@ -438,7 +439,7 @@ func claudeUsageWindows(limits *claudeRateLimits, now time.Time, model claudeMod
 		if known && family == claudeModelFable {
 			hasFableScope = true
 		}
-		if !known || !knownModel || family == model {
+		if claudeModelScopeApplies(window.DisplayName, model) {
 			record(window, 1)
 		}
 	}
@@ -561,4 +562,10 @@ func claudeModelBucket(label string) (claudeModelFamily, bool) {
 	default:
 		return "", false
 	}
+}
+
+func claudeModelScopeApplies(label string, model claudeModelFamily) bool {
+	family, known := claudeModelBucket(label)
+	knownModel := model == claudeModelOpus || model == claudeModelSonnet || model == claudeModelHaiku || model == claudeModelFable
+	return !known || !knownModel || family == model
 }

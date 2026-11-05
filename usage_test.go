@@ -43,28 +43,43 @@ func TestBestCandidateSkipsUnknownAndTiesByName(t *testing.T) {
 
 func TestBestClaudeCandidatePrefersWeeklyHeadroom(t *testing.T) {
 	now := time.Date(2026, 11, 5, 1, 0, 0, 0, time.UTC)
-	makeCandidate := func(name string, session, weekly, opus int) candidate {
+	window := func(used int) string {
+		return fmt.Sprintf(`{"utilization":%d,"resets_at":"2099-01-01T00:00:00Z"}`, used)
+	}
+	makeCandidate := func(name string, session, weekly int, model claudeModelFamily, extra string) candidate {
 		t.Helper()
-		payload := json.RawMessage(fmt.Sprintf(`{"subscription_type":"max","rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":%d,"resets_at":"2099-01-01T00:00:00Z"},"seven_day":{"utilization":%d,"resets_at":"2099-01-01T00:00:00Z"},"seven_day_opus":{"utilization":%d,"resets_at":"2099-01-01T00:00:00Z"}}}`, session, weekly, opus))
-		q, err := parseClaudeQuotaForModel(payload, now, claudeModelOpus)
+		payload := json.RawMessage(fmt.Sprintf(`{"subscription_type":"max","rate_limits_available":true,"rate_limits":{"five_hour":%s,"seven_day":%s%s}}`, window(session), window(weekly), extra))
+		q, err := parseClaudeQuotaForModel(payload, now, model)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return candidate{Account: Account{Name: name}, Quota: q}
 	}
 	for _, test := range []struct {
-		name string
-		a, b candidate
+		name                                 string
+		model                                claudeModelFamily
+		sessionA, weeklyA, sessionB, weeklyB int
+		extraA, extraB                       string
 	}{
-		{"weekly before session", makeCandidate("a", 97, 13, 0), makeCandidate("b", 11, 85, 0)},
-		{"model weekly before session", makeCandidate("a", 97, 13, 10), makeCandidate("b", 11, 13, 50)},
-		{"session tiebreak", makeCandidate("a", 11, 13, 10), makeCandidate("b", 97, 13, 10)},
-		{"exhausted session", makeCandidate("a", 11, 85, 0), makeCandidate("b", 100, 0, 0)},
+		{"weekly before session", claudeModelOpus, 97, 13, 11, 85, "", ""},
+		{"model weekly before session", claudeModelOpus, 97, 13, 11, 13, `,"seven_day_opus":` + window(10), `,"seven_day_opus":` + window(50)},
+		{"session tiebreak", claudeModelOpus, 11, 13, 97, 13, "", ""},
+		{"exhausted session", claudeModelOpus, 11, 85, 100, 0, "", ""},
+		{"model_scoped tier", claudeModelOpus, 97, 13, 11, 13,
+			`,"model_scoped":[{"display_name":"Opus","utilization":10,"resets_at":"2099-01-01T00:00:00Z"}]`,
+			`,"model_scoped":[{"display_name":"Opus","utilization":50,"resets_at":"2099-01-01T00:00:00Z"}]`},
+		{"raw model tier", claudeModelOpus, 97, 13, 11, 13,
+			`,"limits":[{"kind":"weekly_scoped","percent":10,"scope":{"model":{"display_name":"Opus"}},"resets_at":"2099-01-01T00:00:00Z"}]`,
+			`,"limits":[{"kind":"weekly_scoped","percent":50,"scope":{"model":{"display_name":"Opus"}},"resets_at":"2099-01-01T00:00:00Z"}]`},
+		{"Sonnet tier", claudeModelSonnet, 97, 13, 11, 13, `,"seven_day_sonnet":` + window(10), `,"seven_day_sonnet":` + window(50)},
+		{"OAuth apps excluded from rank", claudeModelOpus, 11, 13, 97, 13, `,"seven_day_oauth_apps":` + window(90), `,"seven_day_oauth_apps":` + window(1)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			got, ok := bestCandidate([]candidate{test.b, test.a})
-			if !ok || got.Account.Name != "a" {
-				t.Fatalf("best=%+v ok=%v, want a", got, ok)
+			a := makeCandidate("z", test.sessionA, test.weeklyA, test.model, test.extraA)
+			b := makeCandidate("a", test.sessionB, test.weeklyB, test.model, test.extraB)
+			got, ok := bestCandidate([]candidate{b, a})
+			if !ok || got.Account.Name != "z" {
+				t.Fatalf("best=%+v ok=%v, want z", got, ok)
 			}
 		})
 	}

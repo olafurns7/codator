@@ -51,6 +51,7 @@ func claudeStatusDetails(state claudeProbeCache, found bool, readErr error, now 
 	type bucket struct {
 		label  string
 		window *claudeUsageWindow
+		scope  string
 	}
 	var buckets []bucket
 	add := func(label string, window *claudeUsageWindow) {
@@ -84,6 +85,7 @@ func claudeStatusDetails(state claudeProbeCache, found bool, readErr error, now 
 	modelSeen := make(map[string]int)
 	otherModels := 0
 	addModel := func(name string, window *claudeUsageWindow) {
+		scope := name
 		if name == "" || name == "unknown" {
 			otherModels++
 			name = fmt.Sprintf("other reported model %d", otherModels)
@@ -93,7 +95,7 @@ func claudeStatusDetails(state claudeProbeCache, found bool, readErr error, now 
 				name = fmt.Sprintf("%s #%d", name, modelSeen[name])
 			}
 		}
-		add("Weekly ("+name+")", window)
+		buckets = append(buckets, bucket{label: "Weekly (" + name + ")", window: window, scope: scope})
 	}
 	if opus != nil {
 		addModel("Opus", opus)
@@ -118,6 +120,7 @@ func claudeStatusDetails(state claudeProbeCache, found bool, readErr error, now 
 	windows := make([]statusWindow, 0, len(buckets))
 	for _, item := range buckets {
 		window := claudeStatusWindowDetails(item.label, item.window, now)
+		window.claudeScope = item.scope
 		windows = append(windows, window)
 	}
 	knownExhausted := make([]statusKnownExhausted, 0, len(state.Denials))
@@ -129,6 +132,7 @@ func claudeStatusDetails(state claudeProbeCache, found bool, readErr error, now 
 		knownExhausted = append(knownExhausted, statusKnownExhausted{
 			Scope: scope, Until: statusUTCSecond(denial.ResetsAt),
 			ObservedAt: statusUTCSecond(denial.ObservedAt), untilForState: denial.ResetsAt,
+			claudeScope: denial.DisplayName,
 		})
 	}
 	return claudeStatusData{Windows: windows, KnownExhausted: knownExhausted}
@@ -177,6 +181,7 @@ func claudeStatusUnavailableDetails(state claudeProbeCache, reason string, now t
 		knownExhausted = append(knownExhausted, statusKnownExhausted{
 			Scope: scope, Until: statusUTCSecond(denial.ResetsAt),
 			ObservedAt: statusUTCSecond(denial.ObservedAt), untilForState: denial.ResetsAt,
+			claudeScope: denial.DisplayName,
 		})
 	}
 	return claudeStatusData{Unavailable: reason, KnownExhausted: knownExhausted}

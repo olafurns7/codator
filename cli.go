@@ -180,6 +180,11 @@ func claudeModelHintWithFallback(args []string, fallback claudeModelFamily) clau
 			arg == "--agent" || arg == "--agents" || arg == "--resume" || arg == "-r" ||
 			arg == "--continue" || arg == "-c" || arg == "--from-pr" || arg == "--teleport":
 			return ""
+		case arg == "--mcp-config" || arg == "--dangerously-load-development-channels":
+			if i+1 == len(args) || strings.HasPrefix(args[i+1], "-") {
+				return ""
+			}
+			i += 2
 		case claudeValueOption(arg):
 			if arg == "--settings" || arg == "--cwd" || arg == "--plugin-dir" || arg == "--plugin-dir-no-mcp" {
 				implicitOK = false

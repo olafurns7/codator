@@ -54,16 +54,51 @@ func TestClaudeDefaultStatusKeepsFableExhaustionSeparate(t *testing.T) {
 			for _, args := range [][]string{
 				{"claude", "--account", "work"},
 				{"claude", "--account", "work", "--model", "claude-opus-5-5"},
+				{"claude", "--account", "work", "--model", "claude-opus-5-5", "--mcp-config", "/tmp/m.json", "--dangerously-load-development-channels", "server:taskr"},
 			} {
 				if code, _, stderr := runCodatorProcess(t, home, dataHome, binDir, args); code != 0 {
 					t.Fatalf("Opus launch %v code=%d stderr=%q", args, code, stderr)
 				}
 			}
-			if code, _, stderr := runCodatorProcess(t, home, dataHome, binDir, []string{"claude", "--account", "work", "--model", "fable"}); code != 1 || !strings.Contains(stderr, "selected account is ineligible") {
-				t.Fatalf("Fable launch code=%d stderr=%q", code, stderr)
+			for _, args := range [][]string{
+				{"claude", "--account", "work", "--model", "fable"},
+				{"claude", "--account", "work", "--mcp-config", "--model", "fable"},
+				{"claude", "--account", "work", "--dangerously-load-development-channels", "--model", "fable"},
+			} {
+				if code, _, stderr := runCodatorProcess(t, home, dataHome, binDir, args); code != 1 || !strings.Contains(stderr, "selected account is ineligible") {
+					t.Fatalf("Fable launch %v code=%d stderr=%q", args, code, stderr)
+				}
 			}
 			if got := fakeClaudeCount(t, account, ".probe-count"); got != 1 {
 				t.Fatalf("usage probes=%d, want one shared snapshot", got)
+			}
+		})
+	}
+}
+
+func TestClaudeCurrentModelIDsWithExhaustedFable(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		family claudeModelFamily
+	}{
+		{"claude-opus-5-5", claudeModelOpus},
+		{"claude-opus-5-5[1m]", claudeModelOpus},
+		{"claude-sonnet-5-5", claudeModelSonnet},
+		{"claude-sonnet-5-5[1m]", claudeModelSonnet},
+		{"claude-haiku-5-5", claudeModelHaiku},
+		{"claude-haiku-5-5[1m]", claudeModelHaiku},
+		{"fable", claudeModelFable},
+		{"future[1m]", ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			model := claudeModelHint([]string{"--model", test.name})
+			if model != test.family {
+				t.Fatalf("model=%q, want %q", model, test.family)
+			}
+			q, err := parseClaudeQuotaForModel(runtimeDefaultQuotaPayload(85, 0), time.Now(), model)
+			wantEligible := test.family != "" && test.family != claudeModelFable
+			if err != nil || !q.Known || q.Eligible != wantEligible {
+				t.Fatalf("quota=%+v err=%v, want eligible=%t", q, err, wantEligible)
 			}
 		})
 	}

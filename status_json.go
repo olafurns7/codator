@@ -51,6 +51,7 @@ type statusWindow struct {
 	ResetsAt         *time.Time `json:"resets_at,omitempty"`
 	Unavailable      string     `json:"unavailable,omitempty"`
 	resetForState    time.Time  `json:"-"`
+	claudeScope      string     `json:"-"`
 }
 
 type statusKnownExhausted struct {
@@ -58,6 +59,7 @@ type statusKnownExhausted struct {
 	Until         time.Time `json:"until"`
 	ObservedAt    time.Time `json:"observed_at"`
 	untilForState time.Time `json:"-"`
+	claudeScope   string    `json:"-"`
 }
 
 type statusDetails struct {
@@ -65,6 +67,7 @@ type statusDetails struct {
 	KnownExhausted []statusKnownExhausted
 	ObservedAt     *time.Time
 	NextProbeAt    *time.Time
+	ClaudeModel    claudeModelFamily
 }
 
 func statusJSON(store *Store, out io.Writer, providers ...string) error {
@@ -104,7 +107,7 @@ func quotaStatusAccount(provider, account string, q quota, probeErr error, now t
 			state = "unknown"
 		default:
 			state = "ineligible"
-			availableAt = statusExhaustedUntil(windows, knownExhausted, now)
+			availableAt = statusExhaustedUntil(windows, knownExhausted, now, details.ClaudeModel)
 			if availableAt != nil {
 				state = "exhausted"
 			}
@@ -158,9 +161,12 @@ func unavailableStatusAccount(provider, account, state, reason string) statusAcc
 	}
 }
 
-func statusExhaustedUntil(windows []statusWindow, knownExhausted []statusKnownExhausted, now time.Time) *time.Time {
+func statusExhaustedUntil(windows []statusWindow, knownExhausted []statusKnownExhausted, now time.Time, model claudeModelFamily) *time.Time {
 	var latest time.Time
 	for _, window := range windows {
+		if !claudeModelScopeApplies(window.claudeScope, model) {
+			continue
+		}
 		reset := window.resetForState
 		if reset.IsZero() && window.ResetsAt != nil {
 			reset = *window.ResetsAt
@@ -170,6 +176,9 @@ func statusExhaustedUntil(windows []statusWindow, knownExhausted []statusKnownEx
 		}
 	}
 	for _, denial := range knownExhausted {
+		if !claudeModelScopeApplies(denial.claudeScope, model) {
+			continue
+		}
 		until := denial.untilForState
 		if until.IsZero() {
 			until = denial.Until

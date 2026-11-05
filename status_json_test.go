@@ -70,6 +70,60 @@ func TestStatusJSONCodexAccountStates(t *testing.T) {
 	}
 }
 
+func TestStatusClaudeAvailableAtUsesEvaluatedModel(t *testing.T) {
+	now := time.Date(2026, 11, 5, 2, 0, 0, 0, time.UTC)
+	sessionReset, weeklyReset, fableReset := now.Add(2*time.Hour), now.Add(72*time.Hour), now.Add(120*time.Hour)
+	window := func(used float64, reset time.Time) *claudeUsageWindow {
+		stamp, _ := json.Marshal(reset)
+		return &claudeUsageWindow{Utilization: &used, ResetsAt: stamp}
+	}
+	denial := func(scope string) []claudeCachedDenial {
+		return []claudeCachedDenial{{DisplayName: scope, ObservedAt: now, ResetsAt: fableReset}}
+	}
+	for _, test := range []struct {
+		name                   string
+		model                  claudeModelFamily
+		session, weekly, fable float64
+		denials                []claudeCachedDenial
+		want                   time.Time
+	}{
+		{"session and Fable", claudeModelOpus, 100, 85, 100, nil, sessionReset},
+		{"weekly and Fable", claudeModelOpus, 11, 100, 100, nil, weeklyReset},
+		{"session and retained Fable", claudeModelOpus, 100, 85, 0, denial("Fable"), sessionReset},
+		{"weekly and retained Fable", claudeModelOpus, 11, 100, 0, denial("Fable"), weeklyReset},
+		{"retained launched model", claudeModelOpus, 100, 85, 0, denial("Opus"), fableReset},
+		{"retained unknown scope", claudeModelOpus, 100, 85, 0, denial("unknown"), fableReset},
+		{"retained shared scope", claudeModelOpus, 100, 85, 0, denial(""), fableReset},
+		{"unknown launch model", "", 100, 85, 100, nil, fableReset},
+		{"Fable launch", claudeModelFable, 100, 85, 100, nil, fableReset},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fable := *window(test.fable, fableReset)
+			fable.DisplayName = "Fable"
+			snapshot, err := json.Marshal(claudeUsageResponse{SubscriptionType: "max", RateLimitsAvailable: boolPtr(true), RateLimits: &claudeRateLimits{
+				FiveHour: window(test.session, sessionReset), SevenDay: window(test.weekly, weeklyReset), ModelScoped: &[]claudeUsageWindow{fable},
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := claudeProbeCache{Outcome: "usable", ObservedAt: now, Subscription: true, Snapshot: snapshot, Denials: test.denials}
+			q, err := parseClaudeQuotaForModel(snapshot, now, test.model)
+			if err != nil {
+				t.Fatal(err)
+			}
+			q = applyClaudeDenials(q, test.denials, now, test.model, true, now.Add(time.Minute))
+			data := claudeStatusDetails(state, true, nil, now)
+			row := quotaStatusAccount("claude", "work", q, nil, now, statusDetails{Windows: data.Windows, KnownExhausted: data.KnownExhausted, ClaudeModel: test.model})
+			if row.State != "exhausted" || row.Launchable || row.AvailableAt == nil || !row.AvailableAt.Equal(test.want) {
+				t.Fatalf("status=%+v, want available_at=%s", row, test.want)
+			}
+			if len(row.Windows) != 3 || row.Windows[2].Label != "Weekly (Fable)" || row.Windows[2].Exhausted != (test.fable == 100) || len(row.KnownExhausted) != len(test.denials) {
+				t.Fatalf("informational windows or retained denials lost: %+v", row)
+			}
+		})
+	}
+}
+
 func TestStatusJSONShowsCodexCreditsOnlyWhenReported(t *testing.T) {
 	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
 	creditQuota := quota{Known: true, Eligible: true, OnCredits: true, Credits: "62500.00"}
