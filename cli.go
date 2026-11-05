@@ -177,9 +177,25 @@ func claudeModelHintWithFallback(args []string, fallback claudeModelFamily) clau
 			seen = true
 			i++
 		case arg == "--fallback-model" || strings.HasPrefix(arg, "--fallback-model=") ||
-			arg == "--agent" || arg == "--agents" || arg == "--resume" || arg == "-r" ||
-			arg == "--continue" || arg == "-c" || arg == "--from-pr" || arg == "--teleport":
+			arg == "--agent" || arg == "--agents" || arg == "--from-pr" || arg == "--teleport":
 			return ""
+		case arg == "--resume" || arg == "-r":
+			implicitOK = false
+			i++
+			if i < len(args) && !strings.HasPrefix(args[i], "-") {
+				i++
+			}
+		case arg == "--continue" || arg == "-c":
+			implicitOK = false
+			i++
+		case arg == "--add-dir":
+			if i+1 == len(args) || strings.HasPrefix(args[i+1], "-") {
+				return ""
+			}
+			i++
+			for i < len(args) && !strings.HasPrefix(args[i], "-") {
+				i++
+			}
 		case arg == "--mcp-config" || arg == "--dangerously-load-development-channels":
 			if i+1 == len(args) || strings.HasPrefix(args[i+1], "-") {
 				return ""
