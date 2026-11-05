@@ -39,7 +39,8 @@ type statusAccount struct {
 	Windows         []statusWindow         `json:"windows"`
 	KnownExhausted  []statusKnownExhausted `json:"known_exhausted"`
 
-	claudeUnavailable string `json:"-"` // why Claude usage could not be shown
+	claudeUnavailable string      `json:"-"` // why Claude usage could not be shown
+	claudeHeadroom    *[3]float64 `json:"-"` // default-model selection rank for the watch estimate
 }
 
 type statusWindow struct {
@@ -128,6 +129,7 @@ func quotaStatusAccount(provider, account string, q quota, probeErr error, now t
 		State:           state,
 		Launchable:      q.Eligible,
 		HeadroomPercent: headroom,
+		claudeHeadroom:  q.ClaudeHeadroom,
 		Reason:          statusReason(reason),
 		AvailableAt:     availableAt,
 		ObservedAt:      details.ObservedAt,

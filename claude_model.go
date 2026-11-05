@@ -186,6 +186,10 @@ func claudeSettingsOverride(path string) bool {
 
 func claudeSettingsChangeModel(settings map[string]json.RawMessage) bool {
 	for key, raw := range settings {
+		// Advisor choice, per-model tuning, and later fallback do not select the launch model.
+		if key == "advisorModel" || key == "modelSettings" || key == "switchModelsOnFlag" {
+			continue
+		}
 		if strings.Contains(strings.ToLower(key), "model") {
 			return true
 		}

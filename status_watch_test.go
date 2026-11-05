@@ -176,6 +176,33 @@ func TestWatchStaleAndNext(t *testing.T) {
 	}
 }
 
+func TestWatchNextUsesDefaultModelWeeklyHeadroom(t *testing.T) {
+	wall := time.Date(2026, 11, 5, 1, 0, 0, 0, time.UTC)
+	now := time.Now()
+	report := statusReport{GeneratedAt: wall, Providers: []statusProvider{{Provider: "claude", Status: "ok"}}}
+	for _, test := range []struct {
+		name            string
+		session, weekly int
+	}{
+		{"a", 97, 13},
+		{"b", 11, 85},
+		{"empty-session", 100, 0},
+	} {
+		payload := json.RawMessage(strings.Replace(string(runtimeDefaultQuotaPayload(test.weekly, 0)), `"utilization":10`, fmt.Sprintf(`"utilization":%d`, test.session), 1))
+		q, err := parseClaudeQuotaForModel(payload, wall, claudeModelOpus)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data := claudeStatusDetails(claudeProbeCache{Outcome: "usable", ObservedAt: wall, Subscription: true, Snapshot: payload}, true, nil, wall)
+		report.Accounts = append(report.Accounts, quotaStatusAccount("claude", test.name, q, nil, wall, statusDetails{Windows: data.Windows, ObservedAt: &wall}))
+	}
+	s := watchState{}
+	s.finish(report, nil, now, wall)
+	if got := s.nextAccount("claude", now, wall); got != "a" {
+		t.Fatalf("next=%q, want a despite exhausted Fable and low session headroom", got)
+	}
+}
+
 func TestWatchSanitizationIsDisplayOnly(t *testing.T) {
 	now := time.Now().UTC()
 	r := watchFixture(now)

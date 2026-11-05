@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math"
+	"slices"
 	"time"
 )
 
@@ -18,6 +19,8 @@ type quota struct {
 	Credits      string        // Codex credit balance, display only
 	OnCredits    bool          // eligible only through Codex credits
 	Email        string        // signed-in address, display only
+
+	ClaudeHeadroom *[3]float64 // weekly all models, model weekly, session; ranking only
 }
 
 type usageWindow struct {
@@ -72,11 +75,20 @@ func bestCandidate(accounts []candidate) (candidate, bool) {
 		if !item.Quota.Eligible {
 			continue
 		}
-		if !found || item.Quota.Headroom > best.Quota.Headroom || item.Quota.Headroom == best.Quota.Headroom && item.Account.Name < best.Account.Name {
+		rank, bestRank := quotaRank(item.Quota), quotaRank(best.Quota)
+		order := slices.Compare(rank[:], bestRank[:])
+		if !found || order > 0 || order == 0 && item.Account.Name < best.Account.Name {
 			best, found = item, true
 		}
 	}
 	return best, found
+}
+
+func quotaRank(q quota) [3]float64 {
+	if q.ClaudeHeadroom != nil {
+		return *q.ClaudeHeadroom
+	}
+	return [3]float64{q.Headroom}
 }
 
 func durationText(d time.Duration) string {

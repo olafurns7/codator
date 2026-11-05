@@ -17,6 +17,58 @@ func runtimeDefaultQuotaPayload(shared, opus int) json.RawMessage {
 	return json.RawMessage(fmt.Sprintf(`{"subscription_type":"max","rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":10,"resets_at":"2099-01-01T00:00:00Z"},"seven_day":{"utilization":%d,"resets_at":"2099-01-01T00:00:00Z"},"model_scoped":[{"display_name":"Fable","utilization":100,"resets_at":"2099-01-01T00:00:00Z"},{"display_name":"Opus","utilization":%d,"resets_at":"2099-01-01T00:00:00Z"}]}}`, shared, opus))
 }
 
+func TestClaudeDefaultStatusKeepsFableExhaustionSeparate(t *testing.T) {
+	for _, settings := range []string{
+		`{"model":"opus[1m]"}`,
+		`{"model":"opus[1m]","advisorModel":"fable","modelSettings":{"claude-opus-5-5":{"effortLevel":"xhigh"}},"switchModelsOnFlag":false}`,
+		`{}`,
+	} {
+		t.Run(settings, func(t *testing.T) {
+			dataHome, home, binDir, account := newFakeClaudeProfile(t)
+			if err := os.WriteFile(filepath.Join(account.NativeDir, "settings.json"), []byte(settings), 0600); err != nil {
+				t.Fatal(err)
+			}
+			payload := json.RawMessage(strings.Replace(string(runtimeDefaultQuotaPayload(85, 0)), `"utilization":10`, `"utilization":11`, 1))
+			installFakeClaude(t, binDir, payload, false, 0, false)
+			if err := os.WriteFile(filepath.Join(binDir, ".version"), []byte("2.1.280 (Claude Code)\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				code, stdout, stderr := runCodatorProcess(t, home, dataHome, binDir, []string{"status", "--json", "claude"})
+				var report statusReport
+				if code != 0 || json.Unmarshal([]byte(stdout), &report) != nil || len(report.Accounts) != 1 {
+					t.Fatalf("status code=%d stdout=%q stderr=%q", code, stdout, stderr)
+				}
+				row := report.Accounts[0]
+				if row.State != "available" || !row.Launchable || row.HeadroomPercent == nil || *row.HeadroomPercent != 15 {
+					t.Fatalf("default Opus blocked by Fable: %+v", row)
+				}
+				foundFable := false
+				for _, window := range row.Windows {
+					foundFable = foundFable || window.Label == "Weekly (Fable)" && window.Exhausted
+				}
+				if !foundFable {
+					t.Fatal("exhausted Fable window hidden")
+				}
+			}
+			for _, args := range [][]string{
+				{"claude", "--account", "work"},
+				{"claude", "--account", "work", "--model", "claude-opus-5-5"},
+			} {
+				if code, _, stderr := runCodatorProcess(t, home, dataHome, binDir, args); code != 0 {
+					t.Fatalf("Opus launch %v code=%d stderr=%q", args, code, stderr)
+				}
+			}
+			if code, _, stderr := runCodatorProcess(t, home, dataHome, binDir, []string{"claude", "--account", "work", "--model", "fable"}); code != 1 || !strings.Contains(stderr, "selected account is ineligible") {
+				t.Fatalf("Fable launch code=%d stderr=%q", code, stderr)
+			}
+			if got := fakeClaudeCount(t, account, ".probe-count"); got != 1 {
+				t.Fatalf("usage probes=%d, want one shared snapshot", got)
+			}
+		})
+	}
+}
+
 func TestClaudeImplicitRuntimeDefaultLaunch(t *testing.T) {
 	for _, settings := range []struct{ name, content string }{
 		{"missing settings", ""},
@@ -53,8 +105,8 @@ func TestClaudeImplicitRuntimeDefaultLaunch(t *testing.T) {
 			if got := fakeClaudeCount(t, account, ".launch-count"); got != 2 {
 				t.Fatalf("native launches=%d, want 2", got)
 			}
-			if got := fakeClaudeCount(t, Account{NativeDir: filepath.Join(binDir, "native")}, ".version-count"); got != 2 {
-				t.Fatalf("local version checks=%d, want one per launch", got)
+			if got := fakeClaudeCount(t, Account{NativeDir: filepath.Join(binDir, "native")}, ".version-count"); got != 3 {
+				t.Fatalf("local version checks=%d, want one per status or launch", got)
 			}
 		})
 	}
@@ -124,15 +176,15 @@ func TestClaudeRuntimeDefaultConservativeCases(t *testing.T) {
 		args                    []string
 		wantVersion             int
 	}{
-		{"shared cap", "2.1.280 (Claude Code)\n", "", 100, 20, nil, 1},
-		{"Opus cap", "2.1.280 (Claude Code)\n", "", 20, 100, nil, 1},
+		{"shared cap", "2.1.280 (Claude Code)\n", "", 100, 20, nil, 2},
+		{"Opus cap", "2.1.280 (Claude Code)\n", "", 20, 100, nil, 2},
 		{"saved Fable", "2.1.280 (Claude Code)\n", `{"model":"fable"}`, 20, 20, nil, 0},
-		{"explicit Fable", "2.1.280 (Claude Code)\n", "", 20, 20, []string{"--model", "fable"}, 0},
-		{"older release", "2.1.279 (Claude Code)\n", "", 20, 20, nil, 1},
-		{"unsupported release", "2.2.0 (Claude Code)\n", "", 20, 20, nil, 1},
-		{"non-numeric patch", "2.1.+280 (Claude Code)\n", "", 20, 20, nil, 1},
-		{"malformed version", "Claude Code 2.1.280\n", "", 20, 20, nil, 1},
-		{"version failure", "", "", 20, 20, nil, 1},
+		{"explicit Fable", "2.1.280 (Claude Code)\n", "", 20, 20, []string{"--model", "fable"}, 1},
+		{"older release", "2.1.279 (Claude Code)\n", "", 20, 20, nil, 2},
+		{"unsupported release", "2.2.0 (Claude Code)\n", "", 20, 20, nil, 2},
+		{"non-numeric patch", "2.1.+280 (Claude Code)\n", "", 20, 20, nil, 2},
+		{"malformed version", "Claude Code 2.1.280\n", "", 20, 20, nil, 2},
+		{"version failure", "", "", 20, 20, nil, 2},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			dataHome, home, binDir, account := newFakeClaudeProfile(t)

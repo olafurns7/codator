@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
 	"math"
 	"testing"
 	"time"
@@ -36,6 +38,35 @@ func TestBestCandidateSkipsUnknownAndTiesByName(t *testing.T) {
 	got, ok := bestCandidate(items)
 	if !ok || got.Account.Name != "a" {
 		t.Fatalf("best=%+v ok=%v", got, ok)
+	}
+}
+
+func TestBestClaudeCandidatePrefersWeeklyHeadroom(t *testing.T) {
+	now := time.Date(2026, 11, 5, 1, 0, 0, 0, time.UTC)
+	makeCandidate := func(name string, session, weekly, opus int) candidate {
+		t.Helper()
+		payload := json.RawMessage(fmt.Sprintf(`{"subscription_type":"max","rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":%d,"resets_at":"2099-01-01T00:00:00Z"},"seven_day":{"utilization":%d,"resets_at":"2099-01-01T00:00:00Z"},"seven_day_opus":{"utilization":%d,"resets_at":"2099-01-01T00:00:00Z"}}}`, session, weekly, opus))
+		q, err := parseClaudeQuotaForModel(payload, now, claudeModelOpus)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return candidate{Account: Account{Name: name}, Quota: q}
+	}
+	for _, test := range []struct {
+		name string
+		a, b candidate
+	}{
+		{"weekly before session", makeCandidate("a", 97, 13, 0), makeCandidate("b", 11, 85, 0)},
+		{"model weekly before session", makeCandidate("a", 97, 13, 10), makeCandidate("b", 11, 13, 50)},
+		{"session tiebreak", makeCandidate("a", 11, 13, 10), makeCandidate("b", 97, 13, 10)},
+		{"exhausted session", makeCandidate("a", 11, 85, 0), makeCandidate("b", 100, 0, 0)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := bestCandidate([]candidate{test.b, test.a})
+			if !ok || got.Account.Name != "a" {
+				t.Fatalf("best=%+v ok=%v, want a", got, ok)
+			}
+		})
 	}
 }
 

@@ -363,7 +363,7 @@ func parseClaudeQuotaForModel(payload json.RawMessage, now time.Time, model clau
 	if !*usage.RateLimitsAvailable {
 		return quota{Subscription: true, Reason: "Claude rate limits are unavailable"}, nil
 	}
-	values, reason := claudeUsageWindows(usage.RateLimits, now, model)
+	values, headroom, reason := claudeUsageWindows(usage.RateLimits, now, model)
 	allowed := true
 	result := evaluateUsage(&allowed, nil, values)
 	if result.Known && !result.Eligible {
@@ -374,6 +374,9 @@ func parseClaudeQuotaForModel(payload json.RawMessage, now time.Time, model clau
 		return quota{Subscription: true, Reason: reason}, nil
 	}
 	result.Subscription = true
+	if result.Eligible {
+		result.ClaudeHeadroom = &headroom
+	}
 	return result, nil
 }
 
@@ -386,13 +389,14 @@ func knownClaudeSubscription(value string) bool {
 	}
 }
 
-func claudeUsageWindows(limits *claudeRateLimits, now time.Time, model claudeModelFamily) ([]float64, string) {
+func claudeUsageWindows(limits *claudeRateLimits, now time.Time, model claudeModelFamily) ([]float64, [3]float64, string) {
+	headroom := [3]float64{100, 100, 100}
 	if limits == nil {
-		return nil, ""
+		return nil, headroom, ""
 	}
 	values := make([]float64, 0, 8)
 	var firstReason string
-	add := func(window *claudeUsageWindow) string {
+	add := func(window *claudeUsageWindow, priority int) string {
 		if window == nil {
 			return ""
 		}
@@ -414,16 +418,19 @@ func claudeUsageWindows(limits *claudeRateLimits, now time.Time, model claudeMod
 			return "Claude usage window reset time is unknown"
 		}
 		values = append(values, used)
+		if priority >= 0 {
+			headroom[priority] = min(headroom[priority], 100-used)
+		}
 		return ""
 	}
-	record := func(window *claudeUsageWindow) {
-		if reason := add(window); firstReason == "" && reason != "" {
+	record := func(window *claudeUsageWindow, priority int) {
+		if reason := add(window, priority); firstReason == "" && reason != "" {
 			firstReason = reason
 		}
 	}
-	for _, window := range []*claudeUsageWindow{limits.FiveHour, limits.SevenDay, limits.SevenDayOAuthApps} {
-		record(window)
-	}
+	record(limits.FiveHour, 2)
+	record(limits.SevenDay, 0)
+	record(limits.SevenDayOAuthApps, -1)
 	knownModel := model == claudeModelOpus || model == claudeModelSonnet || model == claudeModelHaiku || model == claudeModelFable
 	hasFableScope := false
 	recordModel := func(window *claudeUsageWindow) {
@@ -432,14 +439,14 @@ func claudeUsageWindows(limits *claudeRateLimits, now time.Time, model claudeMod
 			hasFableScope = true
 		}
 		if !known || !knownModel || family == model {
-			record(window)
+			record(window, 1)
 		}
 	}
 	if !knownModel || model == claudeModelOpus {
-		record(limits.SevenDayOpus)
+		record(limits.SevenDayOpus, 1)
 	}
 	if !knownModel || model == claudeModelSonnet {
-		record(limits.SevenDaySonnet)
+		record(limits.SevenDaySonnet, 1)
 	}
 	if limits.ModelScoped != nil {
 		for _, window := range *limits.ModelScoped {
@@ -456,7 +463,7 @@ func claudeUsageWindows(limits *claudeRateLimits, now time.Time, model claudeMod
 	if model == claudeModelFable && !hasFableScope && firstReason == "" {
 		firstReason = "Claude Fable usage window is unknown"
 	}
-	return values, firstReason
+	return values, headroom, firstReason
 }
 
 func claudeRawWeeklyModelWindows(raw json.RawMessage) ([]claudeUsageWindow, string) {
