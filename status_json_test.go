@@ -86,39 +86,67 @@ func TestStatusClaudeAvailableAtUsesEvaluatedModel(t *testing.T) {
 		session, weekly, fable float64
 		denials                []claudeCachedDenial
 		want                   time.Time
+		outcome                string
+		repeated               bool
 	}{
-		{"session and Fable", claudeModelOpus, 100, 85, 100, nil, sessionReset},
-		{"weekly and Fable", claudeModelOpus, 11, 100, 100, nil, weeklyReset},
-		{"session and retained Fable", claudeModelOpus, 100, 85, 0, denial("Fable"), sessionReset},
-		{"weekly and retained Fable", claudeModelOpus, 11, 100, 0, denial("Fable"), weeklyReset},
-		{"retained launched model", claudeModelOpus, 100, 85, 0, denial("Opus"), fableReset},
-		{"retained unknown scope", claudeModelOpus, 100, 85, 0, denial("unknown"), fableReset},
-		{"retained shared scope", claudeModelOpus, 100, 85, 0, denial(""), fableReset},
-		{"unknown launch model", "", 100, 85, 100, nil, fableReset},
-		{"Fable launch", claudeModelFable, 100, 85, 100, nil, fableReset},
+		{"session and Fable", claudeModelOpus, 100, 85, 100, nil, sessionReset, "usable", false},
+		{"weekly and Fable", claudeModelOpus, 11, 100, 100, nil, weeklyReset, "usable", false},
+		{"session and retained Fable", claudeModelOpus, 100, 85, 0, denial("Fable"), sessionReset, "usable", false},
+		{"weekly and retained Fable", claudeModelOpus, 11, 100, 0, denial("Fable"), weeklyReset, "usable", false},
+		{"retained launched model", claudeModelOpus, 100, 85, 0, denial("Opus"), fableReset, "usable", false},
+		{"retained unknown scope", claudeModelOpus, 100, 85, 0, denial("unknown"), fableReset, "usable", false},
+		{"retained shared scope", claudeModelOpus, 100, 85, 0, denial(""), fableReset, "usable", false},
+		{"unknown launch model", "", 100, 85, 100, nil, fableReset, "usable", false},
+		{"Fable launch", claudeModelFable, 100, 85, 100, nil, fableReset, "usable", false},
+		{"transport with shared and Fable denials", claudeModelOpus, 100, 85, 100,
+			[]claudeCachedDenial{{ObservedAt: now, ResetsAt: sessionReset}, {DisplayName: "Fable", ObservedAt: now, ResetsAt: fableReset}}, sessionReset, "transport", false},
+		{"repeated Fable windows", claudeModelOpus, 100, 85, 100, nil, sessionReset, "usable", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fable := *window(test.fable, fableReset)
 			fable.DisplayName = "Fable"
+			scoped := []claudeUsageWindow{fable}
+			labels := []string{"Weekly (Fable)"}
+			if test.repeated {
+				scoped = append(scoped, fable)
+				labels = []string{"Weekly (Fable #1)", "Weekly (Fable #2)"}
+			}
 			snapshot, err := json.Marshal(claudeUsageResponse{SubscriptionType: "max", RateLimitsAvailable: boolPtr(true), RateLimits: &claudeRateLimits{
-				FiveHour: window(test.session, sessionReset), SevenDay: window(test.weekly, weeklyReset), ModelScoped: &[]claudeUsageWindow{fable},
+				FiveHour: window(test.session, sessionReset), SevenDay: window(test.weekly, weeklyReset), ModelScoped: &scoped,
 			}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			state := claudeProbeCache{Outcome: "usable", ObservedAt: now, Subscription: true, Snapshot: snapshot, Denials: test.denials}
+			state := claudeProbeCache{Outcome: test.outcome, ObservedAt: now, Subscription: true, Snapshot: snapshot, Denials: test.denials}
 			q, err := parseClaudeQuotaForModel(snapshot, now, test.model)
 			if err != nil {
 				t.Fatal(err)
 			}
 			q = applyClaudeDenials(q, test.denials, now, test.model, true, now.Add(time.Minute))
+			if test.outcome == "transport" {
+				q = claudeCachedQuota(state, now, test.model)
+			}
 			data := claudeStatusDetails(state, true, nil, now)
 			row := quotaStatusAccount("claude", "work", q, nil, now, statusDetails{Windows: data.Windows, KnownExhausted: data.KnownExhausted, ClaudeModel: test.model})
 			if row.State != "exhausted" || row.Launchable || row.AvailableAt == nil || !row.AvailableAt.Equal(test.want) {
 				t.Fatalf("status=%+v, want available_at=%s", row, test.want)
 			}
-			if len(row.Windows) != 3 || row.Windows[2].Label != "Weekly (Fable)" || row.Windows[2].Exhausted != (test.fable == 100) || len(row.KnownExhausted) != len(test.denials) {
+			wantWindows := 2 + len(labels)
+			if test.outcome == "transport" {
+				wantWindows = 0
+				if data.Unavailable != "last probe failed (transport)" {
+					t.Fatalf("expected unavailable transport projection: %+v", data)
+				}
+			}
+			if len(row.Windows) != wantWindows || len(row.KnownExhausted) != len(test.denials) {
 				t.Fatalf("informational windows or retained denials lost: %+v", row)
+			}
+			if wantWindows > 0 {
+				for i, label := range labels {
+					if row.Windows[i+2].Label != label || row.Windows[i+2].Exhausted != (test.fable == 100) {
+						t.Fatalf("expected %s with exhaustion=%t: %+v", label, test.fable == 100, row.Windows[i+2])
+					}
+				}
 			}
 		})
 	}
