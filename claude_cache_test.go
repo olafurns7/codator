@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1220,5 +1221,62 @@ func TestClaudeProjectionKeepsOneCopyOfRepeatedModelWindow(t *testing.T) {
 	var usage claudeUsageResponse
 	if err := json.Unmarshal(snapshot, &usage); err != nil || len(*usage.RateLimits.ModelScoped) != 1 {
 		t.Fatalf("snapshot = %s, err=%v", snapshot, err)
+	}
+}
+
+// An Opus lane started with the kit launcher's argv must not inherit a spent
+// Fable limit; Fable and an exhausted week still refuse.
+func TestKitLauncherOpusLaneIgnoresFableDenial(t *testing.T) {
+	launcher := func(model string, extra ...string) []string {
+		args := []string{"claude", "--account", "work", "--model", model, "--effort", "medium", "--dangerously-skip-permissions",
+			"--tools", "Bash,Read,Edit,Write,Grep,Glob,ToolSearch,Skill,WebFetch,WebSearch", "--strict-mcp-config",
+			"--settings", `{"agentPushNotifEnabled":false,"disableBundledSkills":true}`}
+		return append(args, extra...)
+	}
+	push := []string{"--mcp-config", "/tmp/push.json", "--dangerously-load-development-channels", "server:taskr"}
+	for _, test := range []struct {
+		name     string
+		week     int
+		command  []string
+		eligible bool
+	}{
+		{"Opus", 43, launcher("claude-opus-5-5"), true},
+		{"Opus push", 43, launcher("claude-opus-5-5", push...), true},
+		{"Fable", 43, launcher("claude-fable-5-2", push...), false},
+		{"Opus with unknown flag keeps every limit", 43, launcher("claude-opus-5-5", "--future-flag"), false},
+		{"Opus at zero week headroom", 100, launcher("claude-opus-5-5", push...), false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dataHome, home, binDir, account := newFakeClaudeProfile(t)
+			reset := time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339Nano)
+			payload := json.RawMessage(fmt.Sprintf(`{"subscription_type":"max","rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":10,"resets_at":%q},"seven_day":{"utilization":%d,"resets_at":%q},"model_scoped":[{"display_name":"Fable","utilization":100,"resets_at":%q},{"display_name":"Opus","utilization":20,"resets_at":%q}]}}`, reset, test.week, reset, reset, reset))
+			installFakeClaude(t, binDir, payload, false, 0, false)
+			if code, _, stderr := runCodatorProcess(t, home, dataHome, binDir, []string{"status", "claude"}); code != 0 {
+				t.Fatalf("prime cache code=%d stderr=%q", code, stderr)
+			}
+			store, err := newStore(dataHome)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state, found, err := store.readClaudeProbeCache(account, time.Now().UTC())
+			if err != nil || !found || !slices.ContainsFunc(state.Denials, func(d claudeCachedDenial) bool { return d.DisplayName == "Fable" }) {
+				t.Fatalf("fixture has no Fable denial: found=%t denials=%#v err=%v", found, state.Denials, err)
+			}
+			code, _, stderr := runCodatorProcess(t, home, dataHome, binDir, test.command)
+			if test.eligible {
+				if code != 0 {
+					t.Fatalf("launch %q code=%d stderr=%q", test.command, code, stderr)
+				}
+				got, err := os.ReadFile(filepath.Join(filepath.Dir(account.NativeDir), ".launch-argv"))
+				if err != nil || string(got) != strings.Join(test.command[3:], "\x00")+"\x00" {
+					t.Fatalf("native argv=%q err=%v", got, err)
+				}
+			} else if code != 1 || !strings.Contains(stderr, "selected account is ineligible") {
+				t.Fatalf("launch %q code=%d stderr=%q, want ineligible", test.command, code, stderr)
+			}
+			if got := fakeClaudeCount(t, account, ".probe-count"); got != 1 {
+				t.Fatalf("probes=%d, want 1 (cache only)", got)
+			}
+		})
 	}
 }
