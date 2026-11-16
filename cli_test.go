@@ -133,6 +133,7 @@ func TestClaudeModelHintUsesOnlyUnambiguousNativeModelFlags(t *testing.T) {
 		{"current Opus 5.5 full ID", []string{"--model", "claude-opus-5-5"}, claudeModelOpus},
 		{"current Sonnet full ID", []string{"--model", "claude-sonnet-5"}, claudeModelSonnet},
 		{"current Fable full ID", []string{"--model", "claude-fable-5-1"}, claudeModelFable},
+		{"current Fable 5.2 full ID", []string{"--model", "claude-fable-5-2"}, claudeModelFable},
 		{"older Fable ID is conservative", []string{"--model", "claude-fable-5"}, ""},
 		{"other model version is conservative", []string{"--model", "claude-sonnet-4-5"}, ""},
 		{"equals model option", []string{"--model=sonnet"}, claudeModelSonnet},
@@ -286,6 +287,61 @@ func TestStatusWatchRefreshCombinations(t *testing.T) {
 		}
 		if _, err := os.Stat(dataHome); !os.IsNotExist(err) {
 			t.Fatalf("invalid flags touched store: %v", err)
+		}
+	}
+}
+
+// Argv shapes the kit launchers pass after Codator's own --account prefix.
+func TestClaudeModelHintForKitLauncherArgv(t *testing.T) {
+	settings := `{"agentPushNotifEnabled":false,"disableBundledSkills":true,"skillOverrides":{"example":"off"}}`
+	worker := func(model string, strict, push bool) []string {
+		args := []string{"--model", model, "--effort", "medium", "--dangerously-skip-permissions", "--tools", "Bash,Read,Edit,Write,Grep,Glob,ToolSearch,Skill,WebFetch,WebSearch"}
+		if strict {
+			args = append(args, "--strict-mcp-config")
+		}
+		args = append(args, "--settings", settings)
+		if push {
+			args = append(args, "--mcp-config", "/tmp/push.json", "--dangerously-load-development-channels", "server:taskr")
+		}
+		return args
+	}
+	lead := []string{"--model", "claude-opus-5-5", "--effort", "high", "--dangerously-skip-permissions", "--settings", settings, "--add-dir", "/tmp/worktree", "--mcp-config", "/tmp/lead.json", "--dangerously-load-development-channels", "server:taskr"}
+	hub := []string{"--model", "claude-opus-5-5", "--effort", "high", "--mcp-config", "/tmp/hub.json", "--dangerously-load-development-channels", "server:taskr"}
+	for _, test := range []struct {
+		name string
+		args []string
+		want claudeModelFamily
+	}{
+		{"launch strict", worker("claude-opus-5-5", true, false), claudeModelOpus},
+		{"launch strict push", worker("claude-opus-5-5", true, true), claudeModelOpus},
+		{"launch research lane without strict", worker("claude-opus-5-5", false, false), claudeModelOpus},
+		{"launch research push", worker("claude-opus-5-5", false, true), claudeModelOpus},
+		{"launch Fable 5.1", worker("claude-fable-5-1", true, true), claudeModelFable},
+		{"launch Fable 5.2", worker("claude-fable-5-2", true, true), claudeModelFable},
+		{"launch Haiku", worker("claude-haiku-5-5", true, false), claudeModelHaiku},
+		{"launch Sonnet", worker("claude-sonnet-5-5", true, true), claudeModelSonnet},
+		{"lead", lead, claudeModelOpus},
+		{"lead resume keeps explicit model", append([]string{"--resume", "session-id"}, lead...), claudeModelOpus},
+		{"hub prompt", append(append([]string{}, hub...), "--", "--model fable is prompt text"), claudeModelOpus},
+		{"hub extra resume keeps explicit model", append(append([]string{}, hub...), "--resume", "session-id", "--", "prompt"), claudeModelOpus},
+		{"hub extra model override", append(append([]string{}, hub...), "--model", "fable", "--", "prompt"), ""},
+		{"tools empty list", []string{"--tools", "", "--model", "opus"}, claudeModelOpus},
+		{"tools empty list last, as the probe passes it", []string{"--model", "opus", "--verbose", "--no-session-persistence", "--tools", ""}, claudeModelOpus},
+		{"tools several values", []string{"--tools", "Bash", "Read", "--model", "opus"}, claudeModelOpus},
+		{"tools option-looking value", []string{"--tools", "--model", "opus"}, ""},
+		{"missing tools value", []string{"--model", "opus", "--tools"}, ""},
+		{"tools then later model override", []string{"--model", "opus", "--tools", "Bash", "--model", "fable"}, ""},
+		{"unknown flag stays conservative", append(worker("claude-opus-5-5", true, false), "--future-flag"), ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := claudeModelHint(test.args); got != test.want {
+				t.Fatalf("claudeModelHint(%q) = %q, want %q", test.args, got, test.want)
+			}
+		})
+	}
+	for _, args := range [][]string{{"--tools", "Bash,Read"}, {"--strict-mcp-config"}, {"--tools", "Bash", "--strict-mcp-config", "--", "prompt"}} {
+		if got := claudeModelHintWithFallback(args, claudeModelOpus); got != claudeModelOpus {
+			t.Errorf("implicit args %q: got %q, want %q", args, got, claudeModelOpus)
 		}
 	}
 }

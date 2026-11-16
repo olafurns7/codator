@@ -296,7 +296,7 @@ func claudeModelFamilyForName(name string) (claudeModelFamily, bool) {
 		return claudeModelSonnet, true
 	case "haiku", "claude-haiku-5-5":
 		return claudeModelHaiku, true
-	case "fable", "claude-fable-5-1":
+	case "fable", "claude-fable-5-1", "claude-fable-5-2":
 		return claudeModelFable, true
 	default:
 		return "", false

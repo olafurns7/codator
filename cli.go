@@ -188,7 +188,7 @@ func claudeModelHintWithFallback(args []string, fallback claudeModelFamily) clau
 		case arg == "--continue" || arg == "-c":
 			implicitOK = false
 			i++
-		case arg == "--add-dir":
+		case arg == "--add-dir" || arg == "--tools":
 			if i+1 == len(args) || strings.HasPrefix(args[i+1], "-") {
 				return ""
 			}
@@ -271,7 +271,8 @@ func claudeAttachedValueOption(arg string) bool {
 
 func claudeKnownFlag(arg string) bool {
 	switch arg {
-	case "--print", "-p", "--verbose", "--safe-mode", "--no-session-persistence", "--dangerously-skip-permissions":
+	case "--print", "-p", "--verbose", "--safe-mode", "--no-session-persistence", "--dangerously-skip-permissions",
+		"--strict-mcp-config":
 		return true
 	default:
 		return false
