@@ -4,14 +4,14 @@ The owner runs this sequence. Builds and tests stay local. The release workflow 
 
 ## v0.10.0
 
-At the final merged commit, run the local gates and release build with Go 1.26.9:
+At the final merged commit, run the local gates and release build with Go 1.26.11:
 
 ~~~sh
 test -z "$(gofmt -l .)"
-GOTOOLCHAIN=go1.26.9 go vet -p=1 ./...
-GOTOOLCHAIN=go1.26.9 GOMAXPROCS=2 go test -race -p=1 ./...
+GOTOOLCHAIN=go1.26.11 go vet -p=1 ./...
+GOTOOLCHAIN=go1.26.11 GOMAXPROCS=2 go test -race -p=1 ./...
 for script in install.sh scripts/cdx scripts/cdl scripts/release.sh; do sh -n "$script"; done
-GOTOOLCHAIN=go1.26.9 scripts/release.sh
+GOTOOLCHAIN=go1.26.11 scripts/release.sh
 ./dist/codator-linux-amd64 --help
 (cd dist && sha256sum -c SHA256SUMS)
 ~~~
